@@ -14,7 +14,7 @@ import json
 import re
 import sys
 import time
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +27,7 @@ OUTPUT = Path("data/svgjma-history.json")
 
 # Keep requests moderate because JMA explicitly asks users not to make excessive
 # automated requests.
-BATCH_SIZE = 200
+BATCH_SIZE = 100
 REQUEST_PAUSE_SECONDS = 2.0
 REQUEST_TIMEOUT = 120
 ELEMENTS = [["201", ""], ["202", ""], ["203", ""], ["101", ""]]
@@ -35,7 +35,7 @@ ELEMENTS = [["201", ""], ["202", ""], ["203", ""], ["101", ""]]
 
 def jst_today() -> date:
     # GitHub runners use UTC. JST date is UTC+9.
-    return (datetime.utcnow() + timedelta(hours=9)).date()
+    return (datetime.now(UTC) + timedelta(hours=9)).date()
 
 
 def comparison_dates(today: date) -> list[date]:
@@ -63,7 +63,11 @@ def get_stations(session: requests.Session) -> list[dict[str, Any]]:
             lon = float(s["lon"][0]) + float(s["lon"][1]) / 60.0
         except (KeyError, TypeError, ValueError, IndexError):
             continue
-        if not s.get("isTarget"):
+        # Current JMA amedastable.json no longer provides the old isTarget field.
+        # elems is the station capability flag: 1st digit=temperature,
+        # 2nd digit=precipitation. We need both for the daily dataset.
+        elems = str(s.get("elems") or "")
+        if len(elems) < 2 or elems[0] == "0" or elems[1] == "0":
             continue
         obsdl_id = f"a{int(sid):04d}"
         stations.append({
@@ -241,7 +245,7 @@ def build_output(stations: list[dict[str, Any]], today: date, raw: dict[str, dic
         })
     return {
         "schemaVersion": 1,
-        "generatedAt": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        "generatedAt": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "baseDate": today.isoformat(),
         "windowDays": 14,
         "dates": labels,

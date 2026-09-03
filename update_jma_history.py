@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""PhoteoSync JMA API five-station smoke test.
+"""PhoteoSync JMA API ten-station smoke test.
 
 Purpose:
   Verify that GitHub Actions can reach JMA's Past Weather Data Download API
-  with a single AMeDAS station before running the full 915-station job.
+  with a ten-station AMeDAS batch before running the full 915-station job.
 
 This test does NOT write svgjma-history.json.
 """
@@ -25,8 +25,18 @@ SHOW_URL = "https://www.data.jma.go.jp/risk/obsdl/show/table"
 
 # Known working AMeDAS ID format: a + 5-digit station number.
 # a0179 = 三戸 (青森県)
-STATION_ID = "a0179"
-STATION_NAME = "三戸"
+STATION_IDS = [
+    "a0179",  # 三戸（既知の成功地点）
+    "a0103",
+    "a0104",
+    "a0105",
+    "a0106",
+    "a0107",
+    "a0108",
+    "a0109",
+    "a0110",
+    "a0111",
+]
 
 # Same 11-day segment used by the current PhoteoSync job for 2026-09-03.
 START_YEAR = 2022
@@ -48,7 +58,7 @@ def make_payload() -> dict[str, str]:
         str(START_DAY), str(END_DAY),
     ]
     return {
-        "stationNumList": json.dumps([STATION_ID], separators=(",", ":")),
+        "stationNumList": json.dumps(STATION_IDS, separators=(",", ":")),
         "aggrgPeriod": "1",
         "elementNumList": json.dumps(ELEMENTS, separators=(",", ":")),
         "interAnnualType": "2",
@@ -79,9 +89,10 @@ def csv_preview(content: bytes) -> str:
 
 
 def main() -> int:
-    print("=== PhoteoSync JMA five-station smoke test ===")
+    print("=== PhoteoSync JMA ten-station smoke test ===")
     print(f"Time (UTC): {datetime.now(UTC).isoformat()}")
-    print(f"Station: {STATION_ID} ({STATION_NAME})")
+    print(f"Stations: {len(STATION_IDS)}")
+    print(f"Station IDs: {STATION_IDS}")
     print(f"Years: {START_YEAR}-{END_YEAR}")
     print(f"Period: {START_MONTH:02d}/{START_DAY:02d}-{END_MONTH:02d}/{END_DAY:02d}")
     print(f"Elements: {ELEMENTS}")
@@ -106,7 +117,7 @@ def main() -> int:
 
         time.sleep(2)
         data = make_payload()
-        print("[2/3] POST five stations to JMA ...", flush=True)
+        print("[2/3] POST ten stations to JMA ...", flush=True)
         print(f"      stationNumList={data['stationNumList']}", flush=True)
         print(f"      interAnnualType={data['interAnnualType']}", flush=True)
 
@@ -141,9 +152,9 @@ def main() -> int:
         print("      CSV preview:")
         print(preview[:5000])
         print()
-        print("=== SUCCESS ===")
-        print("JMA API accepted the five-station request.")
-        print("The next step can safely test a small multi-station batch.")
+        print(f"=== SUCCESS: {len(STATION_IDS)} stations ===")
+        print("JMA API accepted the ten-station request.")
+        print("The next step can safely test the full 915-station batch.")
         return 0
 
     except Exception as exc:

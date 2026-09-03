@@ -84,11 +84,11 @@ def get_stations(session: requests.Session) -> list[dict[str, Any]]:
 
 
 def get_obsdl_session_id(session: requests.Session) -> str:
-    """Open the JMA download page and obtain its current hidden session id.
+    """Initialize the JMA obsdl session.
 
-    The JMA download endpoint currently expects the PHPSESSID value generated
-    by the download page to be sent as a form field. A plain POST without this
-    value is answered with the normal HTML download page instead of CSV.
+    Current JMA may not expose an <input id="sid"> in the initial HTML.
+    The server can instead establish PHPSESSID through Set-Cookie.  Use that
+    cookie first; fall back to the historical hidden sid field if present.
     """
     r = session.get(
         OBSDL_INDEX_URL,
@@ -99,27 +99,34 @@ def get_obsdl_session_id(session: requests.Session) -> str:
     )
     r.raise_for_status()
 
-    text = r.text
-    # Current page contains: <input ... id="sid" ... value="...">
-    m = re.search(
-        r'<input\b[^>]*\bid=["\']sid["\'][^>]*\bvalue=["\']([^"\']+)["\']',
-        text,
-        flags=re.I,
-    )
-    if not m:
-        # Attribute order is not guaranteed, so also support value before id.
-        m = re.search(
-            r'<input\b[^>]*\bvalue=["\']([^"\']+)["\'][^>]*\bid=["\']sid["\']',
-            text,
-            flags=re.I,
-        )
-    if not m:
-        raise RuntimeError("Could not obtain JMA obsdl PHPSESSID/session id from index.php")
+    # Current/older implementations may establish the session as a cookie.
+    sid_cookie = session.cookies.get("PHPSESSID")
+    if sid_cookie:
+        return sid_cookie.strip()
 
-    sid = m.group(1).strip()
-    if not sid:
-        raise RuntimeError("JMA obsdl returned an empty PHPSESSID/session id")
-    return sid
+    text = r.text
+
+    # Historical obsdl pages contained <input id="sid" value="...">.
+    patterns = [
+        r'<input\b[^>]*\bid=["\']sid["\'][^>]*\bvalue=["\']([^"\']+)["\']',
+        r'<input\b[^>]*\bvalue=["\']([^"\']+)["\'][^>]*\bid=["\']sid["\']',
+        r'\b(?:PHPSESSID|phpsessid|sid)\s*["\':=]+\s*["\']?([A-Za-z0-9_-]{10,})',
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, text, flags=re.I)
+        if m:
+            sid = m.group(1).strip()
+            if sid:
+                return sid
+
+    # Do not guess a session id.  Return an explicit diagnostic including
+    # whether the server sent a cookie and a small HTML preview.
+    cookie_names = ", ".join(sorted(c.name for c in session.cookies)) or "(none)"
+    preview = re.sub(r"\s+", " ", text[:600])
+    raise RuntimeError(
+        "JMA obsdl session id was not exposed as PHPSESSID cookie or sid field; "
+        f"cookies={cookie_names}; HTML preview={preview!r}"
+    )
 
 
 def payload(station_ids: list[str], start_year: int, start_month: int, start_day: int,
@@ -402,7 +409,9 @@ def fetch_segment(session: requests.Session, stations: list[dict[str, Any]], yea
                 # index.php as a form field. Refresh it for every batch so a
                 # stale/expired session cannot poison the whole workflow.
                 sid = get_obsdl_session_id(session)
-                data["PHPSESSID"] = sid
+                print(f"  JMA obsdl session initialized (cookie/form id: {bool(sid)})", flush=True)
+                if sid:
+                    data["PHPSESSID"] = sid
                 time.sleep(REQUEST_PAUSE_SECONDS)
 
                 r = session.post(

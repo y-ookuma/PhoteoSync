@@ -1,171 +1,294 @@
 #!/usr/bin/env python3
-import csv, io, json, math, re, sys, time
-from datetime import date, timedelta
+# -*- coding: utf-8 -*-
+"""Build data/svgjma-history.json for PhoteoSync.
+
+JMA's official "Past Weather Data Download" service is used from GitHub Actions.
+Only the 14-day comparison window (current day included) for the current year
+and previous four years is retained. The browser therefore never contacts JMA.
+"""
+from __future__ import annotations
+
+import csv
+import io
+import json
+import re
+import sys
+import time
+from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Any
+
 import requests
 
-JMA_AMEDAS = 'https://www.jma.go.jp/bosai/amedas/const/amedastable.json'
-OBSDL_INDEX = 'https://www.data.jma.go.jp/risk/obsdl/index.php'
-OBSDL_TABLE = 'https://www.data.jma.go.jp/risk/obsdl/show/table'
-OUT = Path('data/jma-history.json')
+JMA_AMEDAS_URL = "https://www.jma.go.jp/bosai/amedas/const/amedastable.json"
+OBSDL_INDEX_URL = "https://www.data.jma.go.jp/risk/obsdl/index.php"
+OBSDL_TABLE_URL = "https://www.data.jma.go.jp/risk/obsdl/show/table"
+OUTPUT = Path("data/svgjma-history.json")
 
-# JMA obsdl element IDs for daily aggregation: temperature and precipitation.
-# The aggregation period is set to daily, so 201/101 yield daily values.
-ELEMENTS = [['201',''], ['202',''], ['203',''], ['101','']]
-
-
-def station_coords(v):
-    lat = float(v['lat'][0]) + float(v['lat'][1]) / 60.0
-    lon = float(v['lon'][0]) + float(v['lon'][1]) / 60.0
-    return lat, lon
+# Keep requests moderate because JMA explicitly asks users not to make excessive
+# automated requests.
+BATCH_SIZE = 200
+REQUEST_PAUSE_SECONDS = 2.0
+REQUEST_TIMEOUT = 120
+ELEMENTS = [["201", ""], ["202", ""], ["203", ""], ["101", ""]]
 
 
-def haversine(a,b,c,d):
-    r=math.pi/180
-    dl=(c-a)*r; dn=(d-b)*r
-    x=math.sin(dl/2)**2+math.cos(a*r)*math.cos(c*r)*math.sin(dn/2)**2
-    return 6371*2*math.atan2(math.sqrt(x),math.sqrt(1-x))
+def jst_today() -> date:
+    # GitHub runners use UTC. JST date is UTC+9.
+    return (datetime.utcnow() + timedelta(hours=9)).date()
 
 
-def load_stations(session):
-    r=session.get(JMA_AMEDAS, timeout=30)
+def comparison_dates(today: date) -> list[date]:
+    return [today - timedelta(days=i) for i in range(13, -1, -1)]
+
+
+def shift_to_year(d: date, year: int) -> date:
+    if d.month == 2 and d.day == 29:
+        # Keep 14 calendar slots even when a comparison year is not leap.
+        if not (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)):
+            return date(year, 2, 28)
+    return date(year, d.month, d.day)
+
+
+def get_stations(session: requests.Session) -> list[dict[str, Any]]:
+    r = session.get(JMA_AMEDAS_URL, timeout=REQUEST_TIMEOUT)
     r.raise_for_status()
-    obj=r.json()
-    stations=[]
-    for sid, st in obj.items():
-        if not st or not st.get('kjName') or not st.get('lat') or not st.get('lon'):
-            continue
+    raw = r.json()
+    stations: list[dict[str, Any]] = []
+    for sid, s in raw.items():
+        # Current AMeDAS metadata uses id/name/lat/lon. A few records may be
+        # disabled or have incomplete coordinates; skip those safely.
         try:
-            lat,lon=station_coords(st)
-        except Exception:
+            lat = float(s["lat"][0]) + float(s["lat"][1]) / 60.0
+            lon = float(s["lon"][0]) + float(s["lon"][1]) / 60.0
+        except (KeyError, TypeError, ValueError, IndexError):
             continue
-        # obsdl's AMeDAS station selector uses a + 4 digit station number.
-        aid=str(sid).zfill(4)
-        stations.append({'id':sid,'obsdl_id':'a'+aid,'name':st['kjName'],'lat':lat,'lon':lon})
+        if not s.get("isTarget"):
+            continue
+        obsdl_id = f"a{int(sid):04d}"
+        stations.append({
+            "id": str(sid),
+            "obsdlId": obsdl_id,
+            "name": str(s.get("kjName") or s.get("enName") or sid),
+            "lat": round(lat, 6),
+            "lon": round(lon, 6),
+        })
+    stations.sort(key=lambda x: x["id"])
+    if not stations:
+        raise RuntimeError("AMeDAS station list is empty")
     return stations
 
 
-def payload_for(station_ids, start, end, start_year=None, end_year=None):
-    # This is the same form protocol used by JMA's "過去の気象データ・ダウンロード".
-    # One year at a time keeps the request size small enough for the service limit.
-    p={
-        'stationNumList': json.dumps(['a'+str(x).zfill(4) for x in station_ids], ensure_ascii=False),
-        'aggrgPeriod':'1',
-        'elementNumList': json.dumps(ELEMENTS),
-        'interAnnualType':'2',
-        'ymdList': json.dumps([
-            str(start.year if start_year is None else start_year), str(end.year if end_year is None else end_year), str(start.month), str(end.month),
-            str(start.day), str(end.day)
-        ]),
-        'optionNumList':'[]',
-        'downloadFlag':'true', 'rmkFlag':'1', 'disconnectFlag':'1',
-        'youbiFlag':'0', 'fukenFlag':'0', 'kijiFlag':'0', 'huukouFlag':'0',
-        'csvFlag':'1', 'jikantaiFlag':'0', 'jikantaiList':'[]', 'ymdLiteral':'1'
-    }
-    return p
-
-
-def parse_obsdl_csv(text):
-    # obsdl CSV is commonly CP932/Shift-JIS and contains several header rows.
-    lines=text.splitlines()
-    if not lines:
-        return []
-    # Find the first row that looks like a data row (YYYY/MM/DD or YYYY-MM-DD).
-    data_start=None
-    for i,line in enumerate(lines):
-        if re.match(r'^\s*20\d\d[/\\-]\d{1,2}[/\\-]\d{1,2}', line):
-            data_start=i; break
-    if data_start is None:
-        return []
-    # Header rows immediately before data are retained to reconstruct station/item names.
-    header_lines=lines[:data_start]
-    rows=list(csv.reader(io.StringIO('\n'.join(lines[data_start:]))))
-    return rows
-
-
-def decode_response(content):
-    for enc in ('cp932','shift_jis','utf-8-sig','utf-8'):
-        try:
-            return content.decode(enc)
-        except UnicodeDecodeError:
-            pass
-    return content.decode('utf-8','replace')
-
-
-def fetch_period(session, stations, start_year, end_year, month, day_start, day_end):
-    # Split stations into moderate batches. This keeps each obsdl request below the data-size ceiling while keeping the total number of requests small.
-    result={}
-    for offset in range(0,len(stations),250):
-        batch=stations[offset:offset+250]
-        ids=[s['id'] for s in batch]
-        start=date(start_year,month,day_start)
-        end=date(end_year,month,day_end)
-        p=payload_for(ids,start,end,start_year=start_year,end_year=end_year)
-        # Establish a fresh obsdl session and then submit the form; PHPSESSID is required.
-        session.get(OBSDL_INDEX, timeout=30)
-        r=session.post(OBSDL_TABLE, data=p, timeout=120)
-        r.raise_for_status()
-        text=decode_response(r.content)
-        if 'データ量が上限' in text or 'リクエストできるデータ量' in text:
-            raise RuntimeError('気象庁 obsdl のデータ量上限に達しました。')
-        rows=parse_obsdl_csv(text)
-        if not rows:
-            raise RuntimeError(f'obsdl CSVを解釈できませんでした（{start_year}-{end_year}/{month} batch {offset//250+1}）。')
-        # obsdl CSV layout can change. Rather than guessing columns, store the raw CSV batch.
-        result[f'batch_{offset//250:03d}']=text
-        time.sleep(0.5)
-    return result
-
-
-def main():
-    today=date.today()
-    # Current-year "today" is normally not available in JMA daily history, so keep today null.
-    comparison=[]
-    for i in range(13,-1,-1):
-        comparison.append(today-timedelta(days=i))
-    years=[today.year-i for i in range(5)]
-
-    s=requests.Session()
-    s.headers.update({'User-Agent':'PhoteoSync-JMA-Data-Updater/1.0 (+GitHub Actions)'})
-    stations=load_stations(s)
-    if not stations:
-        raise RuntimeError('AMeDAS地点一覧を取得できませんでした。')
-
-    # The browser needs a compact station list for nearest-station selection.
-    meta=[{k:x[k] for k in ('id','obsdl_id','name','lat','lon')} for x in stations]
-
-    # This updater intentionally writes a schema/versioned manifest. The browser can fall back
-    # gracefully if an obsdl run is temporarily unavailable.
-    out={
-        'schemaVersion':2,
-        'source':'Japan Meteorological Agency (JMA) - Past Weather Data Download (obsdl)',
-        'generatedAt':today.isoformat(),
-        'timezone':'Asia/Tokyo',
-        'comparisonDates':[d.isoformat() for d in comparison],
-        'years':years,
-        'stations':meta,
-        'data':{},
-        'note':'JMA daily data are updated through yesterday; the current-year today slot is null.'
+def payload(station_ids: list[str], start_year: int, start_month: int, start_day: int,
+            end_year: int, end_month: int, end_day: int) -> dict[str, str]:
+    # interAnnualType=2: same month/day range for each year in the selected span.
+    ymd = [str(start_year), str(end_year), str(start_month), str(end_month),
+           str(start_day), str(end_day)]
+    return {
+        "stationNumList": json.dumps(station_ids, ensure_ascii=False, separators=(",", ":")),
+        "aggrgPeriod": "1",
+        "elementNumList": json.dumps(ELEMENTS, separators=(",", ":")),
+        "interAnnualType": "2",
+        "ymdList": json.dumps(ymd, separators=(",", ":")),
+        "optionNumList": "[]",
+        "rmkFlag": "1",
+        "disconnectFlag": "1",
+        "kijiFlag": "0",
+        "huukouFlag": "0",
+        "youbiFlag": "0",
+        "fukenFlag": "0",
     }
 
-    # The complete nationwide raw obsdl export is intentionally not embedded in the HTML.
-    # It is stored per year as compressed-ish JSON text and committed by GitHub Actions.
-    # For reliability, the workflow can be rerun after temporary JMA service failures.
-    month_days={}
-    for d in comparison:
-        month_days.setdefault(d.month,set()).add(d.day)
-    # interAnnualType=2 asks JMA for the same month/day window across all selected years.
-    # Therefore each calendar month segment is downloaded once, not once per year.
-    for m, days in month_days.items():
-        ds=sorted(days)
-        # Feb 29 is represented by Feb 28 for non-leap target years in the browser.
-        start_day=min(ds); end_day=max(ds)
-        key=f'{m:02d}'
-        out['data'][key]=fetch_period(s,stations,min(years),max(years),m,start_day,end_day)
 
-    OUT.parent.mkdir(parents=True,exist_ok=True)
-    OUT.write_text(json.dumps(out,ensure_ascii=False,separators=(',',':')),encoding='utf-8')
-    print(f'Wrote {OUT} ({OUT.stat().st_size/1024/1024:.1f} MiB)')
+def csv_rows(raw: bytes) -> list[list[str]]:
+    text = raw.decode("utf-8-sig", errors="replace")
+    # JMA CSV is sometimes Shift-JIS depending on service output.
+    if "年月日" not in text and "年" not in text[:2000]:
+        text = raw.decode("cp932", errors="replace")
+    return list(csv.reader(io.StringIO(text)))
 
-if __name__=='__main__':
+
+def normal(s: str) -> str:
+    return re.sub(r"\s+", "", s or "")
+
+
+def value(s: str) -> float | None:
+    s = normal(s).replace("＊", "").replace("*", "")
+    if not s or s in {"///", "--", "×", "..."}:
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def parse_batch(raw: bytes, stations: list[dict[str, Any]]) -> dict[str, dict[str, dict[str, float | None]]]:
+    """Return station-id -> ISO date -> values."""
+    rows = csv_rows(raw)
+    if not rows:
+        return {}
+
+    data_start = -1
+    for i, row in enumerate(rows):
+        if row and re.match(r"^20\d{2}[/-]\d{1,2}[/-]\d{1,2}", row[0].strip()):
+            data_start = i
+            break
+    if data_start < 0:
+        # Some outputs have year/month/day in separate columns.
+        for i, row in enumerate(rows):
+            if len(row) >= 3 and re.match(r"^20\d{2}$", row[0].strip()) and row[1].strip().isdigit():
+                data_start = i
+                break
+    if data_start < 0:
+        return {}
+
+    headers = rows[:data_start]
+    max_cols = max(len(r) for r in rows)
+    col_text = [normal(" ".join((r[c] if c < len(r) else "") for r in headers)) for c in range(max_cols)]
+
+    out: dict[str, dict[str, dict[str, float | None]]] = {}
+    for st in stations:
+        name = normal(st["name"])
+        cols = {"avg": -1, "min": -1, "max": -1, "rain": -1}
+        for c, h in enumerate(col_text):
+            if name not in h:
+                continue
+            if cols["avg"] < 0 and re.search(r"平均気温|日平均気温", h): cols["avg"] = c
+            if cols["min"] < 0 and re.search(r"最低気温|日最低気温", h): cols["min"] = c
+            if cols["max"] < 0 and re.search(r"最高気温|日最高気温", h): cols["max"] = c
+            if cols["rain"] < 0 and re.search(r"降水量", h): cols["rain"] = c
+        if any(v < 0 for v in cols.values()):
+            continue
+
+        sid = st["id"]
+        out.setdefault(sid, {})
+        for row in rows[data_start:]:
+            if not row:
+                continue
+            first = row[0].strip()
+            m = re.match(r"^(20\d{2})[/-](\d{1,2})[/-](\d{1,2})$", first)
+            if m:
+                iso = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+            elif len(row) >= 3 and re.match(r"^20\d{2}$", row[0].strip()):
+                try:
+                    iso = f"{int(row[0]):04d}-{int(row[1]):02d}-{int(row[2]):02d}"
+                except ValueError:
+                    continue
+            else:
+                continue
+            out[sid][iso] = {
+                "avg": value(row[cols["avg"]] if cols["avg"] < len(row) else ""),
+                "min": value(row[cols["min"]] if cols["min"] < len(row) else ""),
+                "max": value(row[cols["max"]] if cols["max"] < len(row) else ""),
+                "rain": value(row[cols["rain"]] if cols["rain"] < len(row) else ""),
+            }
+    return out
+
+
+def fetch_segment(session: requests.Session, stations: list[dict[str, Any]], years: list[int],
+                  start_month: int, start_day: int, end_month: int, end_day: int) -> dict[str, dict[str, dict[str, float | None]]]:
+    merged: dict[str, dict[str, dict[str, float | None]]] = {}
+    for pos in range(0, len(stations), BATCH_SIZE):
+        batch = stations[pos:pos + BATCH_SIZE]
+        ids = [s["obsdlId"] for s in batch]
+        data = payload(ids, min(years), start_month, start_day, max(years), end_month, end_day)
+        for attempt in range(3):
+            try:
+                top = session.get(OBSDL_INDEX_URL, timeout=REQUEST_TIMEOUT)
+                top.raise_for_status()
+                time.sleep(REQUEST_PAUSE_SECONDS)
+                r = session.post(OBSDL_TABLE_URL, data=data,
+                                 headers={"Referer": OBSDL_INDEX_URL}, timeout=REQUEST_TIMEOUT)
+                r.raise_for_status()
+                if len(r.content) < 100:
+                    raise RuntimeError("JMA returned an unexpectedly small response")
+                parsed = parse_batch(r.content, batch)
+                for sid, rows in parsed.items():
+                    merged.setdefault(sid, {}).update(rows)
+                print(f"  batch {pos + 1}-{pos + len(batch)} / {len(stations)}: {len(parsed)} stations")
+                break
+            except Exception as exc:
+                if attempt == 2:
+                    raise RuntimeError(f"JMA batch failed at {pos}: {exc}") from exc
+                print(f"  retry {attempt + 1}/2 after error: {exc}", file=sys.stderr)
+                time.sleep(5 * (attempt + 1))
+        time.sleep(REQUEST_PAUSE_SECONDS)
+    return merged
+
+
+def build_output(stations: list[dict[str, Any]], today: date, raw: dict[str, dict[str, dict[str, float | None]]]) -> dict[str, Any]:
+    dates = comparison_dates(today)
+    years = [today.year - i for i in range(5)]
+    labels = [f"{d.month:02d}-{d.day:02d}" for d in dates]
+    result_stations = []
+    for st in stations:
+        by_date = raw.get(st["id"], {})
+        years_obj: dict[str, Any] = {}
+        for year in years:
+            arr = {"avg": [], "min": [], "max": [], "rain": []}
+            for base in dates:
+                d = shift_to_year(base, year)
+                v = by_date.get(d.isoformat(), {})
+                for key in arr:
+                    arr[key].append(v.get(key))
+            years_obj[str(year)] = arr
+        result_stations.append({
+            "id": st["id"],
+            "name": st["name"],
+            "lat": st["lat"],
+            "lon": st["lon"],
+            "years": years_obj,
+        })
+    return {
+        "schemaVersion": 1,
+        "generatedAt": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        "baseDate": today.isoformat(),
+        "windowDays": 14,
+        "dates": labels,
+        "years": years,
+        "stations": result_stations,
+    }
+
+
+def main() -> None:
+    today = jst_today()
+    dates = comparison_dates(today)
+    years = [today.year - i for i in range(5)]
+    print(f"PhoteoSync JMA history: base date={today}, years={years}")
+
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "PhoteoSync/1.0 (GitHub Actions; JMA historical data updater)",
+        "Accept-Language": "ja,en;q=0.8",
+    })
+    stations = get_stations(session)
+    print(f"AMeDAS stations: {len(stations)}")
+
+    # The 14-day window can cross a month boundary. Fetch two calendar segments
+    # using obsdl's interAnnualType=2 (same period in each of the five years).
+    first, last = dates[0], dates[-1]
+    segments = [(first.month, first.day, last.month, last.day)]
+    if first.month != last.month:
+        # Month boundary: first segment to month-end, second segment from 1st.
+        next_month = date(first.year + (first.month == 12), (first.month % 12) + 1, 1)
+        month_end = next_month - timedelta(days=1)
+        segments = [(first.month, first.day, month_end.month, month_end.day),
+                    (last.month, 1, last.month, last.day)]
+
+    raw: dict[str, dict[str, dict[str, float | None]]] = {}
+    for seg in segments:
+        print(f"Fetching {seg[0]:02d}/{seg[1]:02d} - {seg[2]:02d}/{seg[3]:02d} for all stations")
+        got = fetch_segment(session, stations, years, *seg)
+        for sid, rows in got.items():
+            raw.setdefault(sid, {}).update(rows)
+
+    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+    result = build_output(stations, today, raw)
+    tmp = OUTPUT.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(result, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    tmp.replace(OUTPUT)
+    print(f"Wrote {OUTPUT} ({OUTPUT.stat().st_size:,} bytes)")
+
+
+if __name__ == "__main__":
     main()

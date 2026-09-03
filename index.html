@@ -1,0 +1,1275 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="icon.png">
+<title>PhoteoSync</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<style>
+  body {
+    margin: 10px auto;
+    font-family: sans-serif;
+    max-width: 900px;
+    min-width: 320px;
+    padding: 0 10px;
+    box-sizing: border-box;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  .main-wrapper {
+    width: 100%;
+  }
+
+  h2 {
+    font-size: 1.2rem;
+    line-height: 1.4;
+    text-align: center;
+  }
+
+  .control-block {
+    margin-bottom: 15px;
+  }
+
+  label {
+    font-size: 0.9rem;
+  }
+
+  .day-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 5px;
+  }
+  .day-row {
+    display: flex;
+    gap: 8px;
+  }
+  .day-btn {
+    flex: 1;
+    min-width: 0;
+    padding: 10px;
+    font-size: 1rem;
+    text-align: center;
+    border: 1px solid #888;
+    border-radius: 6px;
+    background: #f0f0f0;
+    cursor: pointer;
+  }
+  .day-btn.active {
+    background: #2196F3;
+    color: white;
+    border-color: #2196F3;
+  }
+
+  .chart-wrapper {
+    width: 100%;
+    height: 420px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .chart-inner {
+    height: 100%;
+  }
+
+  canvas {
+    width: 100% !important;
+    height: 100% !important;
+  }
+
+  /* ▼ 表（テーブル）もスマホでは横スクロールできるようにラップする */
+  .table-scroll {
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    -ms-overflow-style: none;
+  }
+  .table-scroll table {
+    width: 100%;
+    min-width: 560px; /* これより狭い画面では横スクロール */
+  }
+
+  @media (max-width: 600px) {
+    h2 { font-size: 1rem; }
+    label { font-size: 0.85rem; }
+    .day-btn { font-size: 1.05rem; padding: 12px 4px; }
+    .table-scroll table { font-size: 0.85rem; }
+    .table-scroll td, .table-scroll th { padding: 4px !important; }
+    .chart-wrapper { height: 480px; }
+  }
+
+  footer.license {
+    margin-top: 30px;
+    padding-top: 15px;
+    border-top: 1px solid #ddd;
+    font-size: 0.75rem;
+    line-height: 1.6;
+    color: #777;
+    text-align: center;
+  }
+  footer.license a {
+    color: #777;
+  }
+
+  .day-link {
+    cursor: pointer;
+    color: #2196F3;
+    text-decoration: underline;
+  }
+  .day-link:hover {
+    color: #0d47a1;
+  }
+
+  #back-to-daily {
+    display: none;
+    margin-bottom: 10px;
+    padding: 8px 14px;
+    font-size: 0.9rem;
+    border: 1px solid #888;
+    border-radius: 6px;
+    background: #f0f0f0;
+    cursor: pointer;
+  }
+
+  .toggle-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin: 10px 0;
+    padding: 8px 14px;
+    font-size: 0.9rem;
+    border: 1px solid #888;
+    border-radius: 6px;
+    background: #f0f0f0;
+    cursor: pointer;
+  }
+  .toggle-btn .arrow {
+    display: inline-block;
+    transition: transform 0.2s ease;
+  }
+  .toggle-btn.open .arrow {
+    transform: rotate(90deg);
+  }
+  .toggle-content {
+    display: none;
+  }
+  .toggle-content.open {
+    display: block;
+  }
+
+  .dli-target-table {
+    font-size: 0.85rem;
+    line-height: 1.6;
+    border-collapse: collapse;
+    margin: 10px 0;
+  }
+  .dli-target-table th,
+  .dli-target-table td {
+    border: 1px solid #ccc;
+    padding: 6px 10px;
+    text-align: center;
+  }
+  .dli-target-table th {
+    background: #eee;
+  }
+  .dli-refs {
+    font-size: 0.75rem;
+    line-height: 1.7;
+    color: #555;
+    padding-left: 18px;
+    margin: 6px 0 0 0;
+  }
+  .dli-refs a {
+    color: #2196F3;
+    word-break: break-all;
+  }
+</style>
+</head>
+<body>
+
+<h2 id="title"><a href="https://github.com/y-ookuma/OMGHI/blob/main/README.md" target="_blank" rel="noopener noreferrer" style="color: inherit; text-decoration: none;">PhoteoSync</a><br>（現在地取得中…）</h2>
+
+<div class="main-wrapper">
+
+  <div class="control-block">
+    <label>表示日付</label>
+    <div class="day-buttons">
+      <div class="day-row">
+        <div class="day-btn" data-offset="-15">-15日</div>
+        <div class="day-btn" data-offset="-7">-7日</div>
+        <div class="day-btn" data-offset="-3">-3日</div>
+      </div>
+      <div class="day-row">
+        <div class="day-btn active" data-offset="0">本日</div>
+      </div>
+      <div class="day-row">
+        <div class="day-btn" data-offset="3">+3日</div>
+        <div class="day-btn" data-offset="7">+7日</div>
+        <div class="day-btn" data-offset="15">+15日</div>
+      </div>
+    </div>
+  </div>
+
+  <button id="back-to-daily" onclick="backToRangeView()">← 期間表示に戻る</button>
+
+  <div class="chart-wrapper">
+    <div class="chart-inner" id="chart-inner">
+      <canvas id="chart"></canvas>
+    </div>
+  </div>
+
+  <!-- ▼ 日別集計テーブルの表示場所 -->
+  <div id="daily-summary"></div>
+
+  <!-- ▼ 用語の説明（開閉式） -->
+  <button type="button" class="toggle-btn" id="glossary-toggle-btn" onclick="toggleGlossary()">
+    <span class="arrow">▶</span>ⓘ 用語の説明
+  </button>
+  <div class="toggle-content" id="glossary-toggle-content">
+    <ul style="font-size: 0.85rem; line-height: 1.8; padding-left: 20px; margin: 8px 0;">
+      <li><b>短波放射</b>：太陽から地表に届く全天日射（直達光＋散乱光）のエネルギー量。</li>
+      <li><b>散乱光比率</b>：短波放射のうち、雲や大気で拡散された「散乱光」が占める割合。高いほど曇りがちな光。</li>
+      <li><b>PAR（光合成有効放射）</b>：短波放射のうち、植物の光合成に使われる波長域(400〜700nm)のエネルギー量。</li>
+      <li><b>PPFD（光量子束密度）</b>：PARを「光の粒（光子）の数」で表した値（μmol/m²/s）。</li>
+      <li><b>DLI（1日の積算光量子量）</b>：PPFDを1日分積算した値（mol/m²/日）。施設園芸などで「その日、光が足りていたか」の目安に使われる。</li>
+    </ul>
+
+    <div style="font-size: 0.85rem; margin: 8px 0 4px;">
+      <b>参考：作物別の目標（1日あたり）</b>
+    </div>
+    <div class="table-scroll">
+      <table class="dli-target-table">
+        <tr>
+          <th>作物</th>
+          <th>PAR (MJ/m²/日)</th>
+          <th>DLI (mol/m²/日)</th>
+          <th>備考</th>
+        </tr>
+        <tr>
+          <td>トマト</td>
+          <td>4.3〜6.5</td>
+          <td>20〜30</td>
+          <td>果菜類は高めのDLIが必要</td>
+        </tr>
+        <tr>
+          <td>キュウリ</td>
+          <td>4.3〜6.5</td>
+          <td>20〜30</td>
+          <td>果菜類は高めのDLIが必要</td>
+        </tr>
+        <tr>
+          <td>いちご</td>
+          <td>4.3〜5.4（最低目安 2.2〜2.6）</td>
+          <td>20〜25（最低目安 10〜12）</td>
+          <td>30を超えると生育ストレスの恐れ</td>
+        </tr>
+      </table>
+    </div>
+    <div style="font-size: 0.7rem; color: #888; margin: 2px 0 6px;">
+      ※ PAR (MJ/m²/日) は、本ツールと同じ換算係数（PAR 1W/m² ≒ PPFD 4.6μmol/m²/s、すなわち DLI(mol/m²/日) ÷ 4.6 ）を用いて目標DLIから算出した概算値です。
+    </div>
+    <ol class="dli-refs">
+      <li>
+        Virginia Cooperative Extension, "Calculating and Using Daily Light Integral (DLI): An Introductory Guide" (SPES-720)：
+        <a href="https://www.pubs.ext.vt.edu/SPES/spes-720/spes-720.html" target="_blank" rel="noopener noreferrer">https://www.pubs.ext.vt.edu/SPES/spes-720/spes-720.html</a>
+      </li>
+      <li>
+        The Ohio State University, "Photosynthetic Lighting" (Indoor/Controlled Environment Berry Production)：
+        <a href="https://u.osu.edu/indoorberry/photosynthetic-lighting/" target="_blank" rel="noopener noreferrer">https://u.osu.edu/indoorberry/photosynthetic-lighting/</a>
+      </li>
+    </ol>
+    <div style="font-size: 0.7rem; color: #888; margin-top: 4px;">
+      ※ 上記は一般的な栽培目安であり、品種・作型・CO₂濃度・気温などにより最適値は変動します。
+    </div>
+  </div>
+
+  <div style="display:flex; gap:8px; flex-wrap:wrap;">
+    <button id="csv-export-hourly-btn" class="toggle-btn" onclick="exportHourlyCSV()">⬇ 1時間ごとCSV</button>
+    <button id="csv-export-daily-btn" class="toggle-btn" onclick="exportDailyCSV()">⬇ 日計CSV</button>
+  </div>
+
+  <!-- ▼ ライセンス表記 -->
+  <footer class="license">
+    This project is licensed under the MIT License.<br>
+    Copyright (c) 2026 <a href="https://github.com/y-ookuma/OMGHI/blob/main/README.md" target="_blank" rel="noopener noreferrer">y-ookuma</a><br>
+    <br>
+    This project uses weather data provided by Open‑Meteo.<br>
+    Weather data by <a href="https://open-meteo.com/" target="_blank" rel="noopener noreferrer">Open‑Meteo.com</a>,
+    licensed under <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener noreferrer">CC BY 4.0</a>.
+  </footer>
+
+</div>
+
+<script>
+
+/* ▼ JST（Asia/Tokyo）統一ユーティリティ
+      ブラウザのローカルタイムゾーンには依存せず、常にJST(+09:00)で扱う。 */
+const PHOTEOSYNC_TIMEZONE = "Asia/Tokyo";
+const PHOTEOSYNC_JST_OFFSET_MINUTES = 9 * 60;
+
+function getJSTParts(baseDate = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: PHOTEOSYNC_TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(baseDate);
+
+  const out = {};
+  for (const part of parts) out[part.type] = part.value;
+  return {
+    year: Number(out.year),
+    month: Number(out.month),
+    day: Number(out.day)
+  };
+}
+
+function getJSTDateString(baseDate = new Date(), offsetDays = 0) {
+  const p = getJSTParts(baseDate);
+  const d = new Date(Date.UTC(p.year, p.month - 1, p.day + offsetDays));
+  const yyyy = d.getUTCFullYear();
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function getJSTDateJapanese(baseDate = new Date(), offsetDays = 0) {
+  const p = getJSTParts(baseDate);
+  const d = new Date(Date.UTC(p.year, p.month - 1, p.day + offsetDays));
+  const weekdays = ["日", "月", "火", "水", "木", "金", "土"];
+  return `${d.getUTCFullYear()}年${d.getUTCMonth() + 1}月${d.getUTCDate()}日(${weekdays[d.getUTCDay()]})`;
+}
+
+/* Open-Meteoのtimezone=Asia/Tokyoで返る
+   "YYYY-MM-DDTHH:MM" を「JSTの壁時計時刻」として数値化する。
+   new Date("YYYY-MM-DDTHH:MM") はブラウザのローカルTZに依存するため使用しない。 */
+function jstIsoToMs(timeStr) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(timeStr);
+  if (!m) return NaN;
+
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  const hh = Number(m[4]);
+  const mm = Number(m[5]);
+  const ss = Number(m[6] || 0);
+
+  // JST(+09:00)の壁時計時刻をUTC基準の数値へ変換。
+  // T24:00にも対応するため、Date.UTCで日付繰り上げを任せる。
+  return Date.UTC(y, mo - 1, d, hh, mm, ss) - PHOTEOSYNC_JST_OFFSET_MINUTES * 60000;
+}
+
+function addJSTDays(dateStr, offsetDays) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr);
+  if (!m) return dateStr;
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]) + offsetDays));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+}
+
+/* ▼ 短波放射(全天日射)から光合成有効放射(PAR)への近似変換係数
+      直達光と散乱光ではPARの割合が異なる（散乱光の方が可視光〔PAR波長〕の
+      割合が高い傾向がある）ため、それぞれ別の係数で計算する近似値 */
+const PAR_RATIO_DIRECT = 0.43;   // 直達光のうちPARが占める割合の近似値
+const PAR_RATIO_DIFFUSE = 0.57;  // 散乱光のうちPARが占める割合の近似値（直達光より高め）
+function calcPar(direct, diffuse) {
+  return direct * PAR_RATIO_DIRECT + diffuse * PAR_RATIO_DIFFUSE;
+}
+
+/* ▼ 散乱光比率（全天日射に対する散乱光の割合） */
+function calcDiffuseFraction(sw, diffuse) {
+  return sw > 0 ? (diffuse / sw) * 100 : 0;
+}
+
+/* ▼ PAR(W/m²)から光量子束密度PPFD(μmol/m²/s)への近似変換係数
+      PPFD ≈ PAR(W/m²) × 4.6（1Wあたり約4.6μmolの光量子、というエネルギー→光量子数の変換係数） */
+const PPFD_FACTOR = 4.6;
+function parToPpfd(parW) {
+  return parW * PPFD_FACTOR;
+}
+
+/* ▼ 指定した日付・緯度経度における日出・日入時刻(JST, 小数時)を計算
+      NOAA Solar Calculatorのアルゴリズム(Spencerの式)に基づく近似計算。
+      タイムゾーンは常にJST(+9時間)固定として計算する。 */
+function getSunTimes(dateStr, lat, lon) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  // dateStr自体がJSTの日付。天文計算の通日だけをUTC基準で求め、
+  // ブラウザのローカルTZには一切依存しない。
+  const jstDateAsUTC = new Date(Date.UTC(y, m - 1, d));
+  const yearStart = new Date(Date.UTC(y, 0, 1));
+  const dayOfYear = Math.floor((jstDateAsUTC - yearStart) / 86400000) + 1;
+
+  const rad = Math.PI / 180;
+  const gamma = (2 * Math.PI / 365) * (dayOfYear - 1);
+
+  // 均時差（分）
+  const eqtime = 229.18 * (
+    0.000075
+    + 0.001868 * Math.cos(gamma)
+    - 0.032077 * Math.sin(gamma)
+    - 0.014615 * Math.cos(2 * gamma)
+    - 0.040849 * Math.sin(2 * gamma)
+  );
+
+  // 太陽赤緯（ラジアン）
+  const decl = 0.006918
+    - 0.399912 * Math.cos(gamma)
+    + 0.070257 * Math.sin(gamma)
+    - 0.006758 * Math.cos(2 * gamma)
+    + 0.000907 * Math.sin(2 * gamma)
+    - 0.002697 * Math.cos(3 * gamma)
+    + 0.00148 * Math.sin(3 * gamma);
+
+  const zenith = 90.833 * rad; // 大気差＋太陽視半径を考慮した基準天頂角
+  const latRad = lat * rad;
+
+  const cosHA = (Math.cos(zenith) / (Math.cos(latRad) * Math.cos(decl)))
+    - Math.tan(latRad) * Math.tan(decl);
+
+  if (cosHA > 1) {
+    // 太陽が昇らない（極夜）
+    return { sunrise: null, sunset: null, polarNight: true, polarDay: false };
+  }
+  if (cosHA < -1) {
+    // 太陽が沈まない（白夜）
+    return { sunrise: null, sunset: null, polarNight: false, polarDay: true };
+  }
+
+  const ha = Math.acos(cosHA) / rad; // 時角（度）
+
+  const timezone = 9; // JST固定
+  const solarNoon = 720 - 4 * lon - eqtime + 60 * timezone; // 分（0時からの経過分）
+
+  const sunriseMin = solarNoon - 4 * ha;
+  const sunsetMin = solarNoon + 4 * ha;
+
+  return {
+    sunrise: sunriseMin / 60, // 小数時（JST）
+    sunset: sunsetMin / 60,
+    polarNight: false,
+    polarDay: false
+  };
+}
+
+/* ▼ 小数時（例: 5.5）を "HH:MM" 形式の文字列に変換 */
+function formatDecimalHour(dh) {
+  if (dh === null || dh === undefined || isNaN(dh)) return "--:--";
+  let h = Math.floor(dh);
+  let mi = Math.round((dh - h) * 60);
+  if (mi === 60) { mi = 0; h += 1; }
+  h = ((h % 24) + 24) % 24;
+  return `${String(h).padStart(2, "0")}:${String(mi).padStart(2, "0")}`;
+}
+
+/* ▼ 指定日の日出・日入時刻を "HH:MM" の文字列ペアで取得（極夜・白夜は文言を返す） */
+function getSunTimeStrings(dateStr, lat, lon) {
+  const sun = getSunTimes(dateStr, Number(lat), Number(lon));
+  if (sun.polarNight) return { sunrise: "（出ない）", sunset: "（出ない）" };
+  if (sun.polarDay) return { sunrise: "（沈まない）", sunset: "（沈まない）" };
+  return { sunrise: formatDecimalHour(sun.sunrise), sunset: formatDecimalHour(sun.sunset) };
+}
+
+const dateStr = getJSTDateString();
+function addDays(offsetDays) {
+  return getJSTDateString(new Date(), offsetDays);
+}
+
+document.querySelector('.day-btn[data-offset="0"]').textContent =
+  `本日 ${getJSTDateJapanese()}`;
+
+let dayOffset = 0;
+
+document.querySelectorAll(".day-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    dayOffset = Number(btn.dataset.offset);
+    document.querySelectorAll(".day-btn").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    loadChart();
+  });
+});
+
+let lat = null;
+let lon = null;
+let currentData = null;
+
+navigator.geolocation.getCurrentPosition(success, error);
+
+/* ▼ 国土地理院(GSI) 市区町村変換テーブル(muni.js)の読み込み
+      muniCd と lv01Nm(大字等)は同じGSIレコードから得られるため、
+      市区町村と大字が食い違うことがない */
+function loadMuniTable() {
+  return new Promise((resolve, reject) => {
+    if (window.GSI && window.GSI.MUNI_ARRAY) {
+      resolve();
+      return;
+    }
+    // muni.js は "GSI.MUNI_ARRAY = {...}" のように、既存の GSI オブジェクトへ
+    // 代入する作りになっているため、読み込み前に GSI を用意しておく必要がある
+    window.GSI = window.GSI || {};
+
+    const script = document.createElement("script");
+    script.src = "https://maps.gsi.go.jp/js/muni.js";
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error("muni.js load failed"));
+    document.head.appendChild(script);
+  });
+}
+
+/* ▼ タイトル表示用のHTML片（GitHub READMEへのリンク付き）を使い回す */
+const TITLE_HTML = `<a href="https://github.com/y-ookuma/OMGHI/blob/main/README.md" target="_blank" rel="noopener noreferrer" style="color: inherit; text-decoration: none;">PhoteoSync</a>`;
+
+function success(pos) {
+  // 緯度・経度そのものはWGS84座標であり「JST化」はできない。
+  // ここでは現在地をWGS84で固定し、その地点の時刻系をJST(+09:00)として統一する。
+  lat = pos.coords.latitude.toFixed(6);
+  lon = pos.coords.longitude.toFixed(6);
+
+  document.getElementById("title").innerHTML =
+    `${TITLE_HTML}<br>（現在地取得中… ${lat}, ${lon}｜時刻: JST）`;
+
+  Promise.all([
+    loadMuniTable(),
+    fetch(`https://mreversegeocoder.gsi.go.jp/reverse-geocoder/LonLatToAddress?lat=${lat}&lon=${lon}`)
+      .then(res => res.json())
+  ])
+    .then(([, geo]) => {
+      const results = geo && geo.results;
+      if (!results || !results.muniCd) {
+        throw new Error("住所情報が見つかりませんでした");
+      }
+
+      // muniCdの先頭ゼロを除いたキーでmuni.jsを検索 (例: "01102" → "1102")
+      const muniKey = String(Number(results.muniCd));
+      const muniRow = window.GSI.MUNI_ARRAY ? window.GSI.MUNI_ARRAY[muniKey] : null;
+      // muniRow の形式: "都道府県コード,都道府県名,市区町村コード,市区町村名"
+      const muniName = muniRow ? muniRow.split(",")[3] : "";
+      const oaza = results.lv01Nm || "";
+
+      // muniNameとoazaは同一レコード由来なので、対応しない組み合わせにならない
+      const placeName = `${muniName}${oaza}`;
+
+      document.getElementById("title").innerHTML =
+        `${TITLE_HTML}<br>` +
+        `現在地: ${lat}, ${lon}${placeName ? "　" + placeName : ""}`;
+    })
+    .catch(() => {
+      // GSIでデータが見つからない地域(離島・一部山間部等)は座標のみ表示
+      document.getElementById("title").innerHTML =
+        `${TITLE_HTML}<br>` +
+        `現在地: ${lat}, ${lon}`;
+    });
+
+  loadChart();
+}
+
+function error() {
+  alert("位置情報が許可されていません。ブラウザ設定で許可してください。");
+}
+
+/* ▼ 時間別集計テーブル生成（本日選択時のみ） */
+function buildHourlySummary(data) {
+
+  const times = data.hourly.time;
+  const temp = data.hourly.temperature_2m;
+  const rain = data.hourly.rain;
+  const sw = data.hourly.shortwave_radiation;
+  const direct = data.hourly.direct_radiation;
+  const diffuse = data.hourly.diffuse_radiation;
+  const par = sw.map((_, i) => calcPar(direct[i], diffuse[i]));
+  const ppfd = par.map(parToPpfd);
+  const diffuseFraction = sw.map((v, i) => calcDiffuseFraction(v, diffuse[i]));
+
+  let html = `
+    <button type="button" class="toggle-btn" id="hourly-toggle-btn" onclick="toggleHourlySummary()">
+      <span class="arrow">▶</span>1時間ごとの集計
+    </button>
+    <div class="toggle-content" id="hourly-toggle-content">
+    <div class="table-scroll">
+    <table border="1" cellpadding="6" style="border-collapse: collapse;">
+      <tr style="background:#eee;">
+        <th>時刻</th>
+        <th>気温 (°C)</th>
+        <th>短波放射 (W/m²)</th>
+        <th>短波放射 (MJ/m²)</th>
+        <th>散乱光比率 (%)</th>
+        <th>PAR (W/m²)</th>
+        <th>PAR (MJ/m²)</th>
+        <th>PPFD (μmol/m²/s)</th>
+        <th>雨量 (mm)</th>
+      </tr>
+  `;
+
+  for (let i = 0; i < times.length; i++) {
+    // Open-Meteoはtimezone=Asia/Tokyoなので、文字列をそのままJSTとして表示。
+    const hhmm = times[i].slice(11, 16);
+    const hh = hhmm.slice(0, 2);
+    const mm = hhmm.slice(3, 5);
+    const swMj = sw[i] * 0.0036;
+    const parMj = par[i] * 0.0036;
+
+    html += `
+      <tr>
+        <td>${hh}:${mm}</td>
+        <td>${temp[i].toFixed(1)}</td>
+        <td>${sw[i]}</td>
+        <td>${swMj.toFixed(2)}</td>
+        <td>${diffuseFraction[i].toFixed(0)}</td>
+        <td>${par[i].toFixed(1)}</td>
+        <td>${parMj.toFixed(2)}</td>
+        <td>${ppfd[i].toFixed(0)}</td>
+        <td>${rain[i].toFixed(1)}</td>
+      </tr>
+    `;
+  }
+
+  /* ▼ サマリー行（気温:最高/平均/最低、短波放射・PAR・PPFD:最大/平均、散乱光比率:平均、短波放射・PAR(MJ/m²)・雨量:積算値） */
+  const maxT = Math.max(...temp).toFixed(1);
+  const avgT = (temp.reduce((a, b) => a + b, 0) / temp.length).toFixed(1);
+  const minT = Math.min(...temp).toFixed(1);
+  const maxSWraw = Math.max(...sw).toFixed(1);
+  const avgSWraw = (sw.reduce((a, b) => a + b, 0) / sw.length).toFixed(1);
+  const sumSW = sw.reduce((a, b) => a + b * 0.0036, 0).toFixed(2);
+  const avgDiffuseFraction = (diffuseFraction.reduce((a, b) => a + b, 0) / diffuseFraction.length).toFixed(0);
+  const maxPARraw = Math.max(...par).toFixed(1);
+  const avgPARraw = (par.reduce((a, b) => a + b, 0) / par.length).toFixed(1);
+  const sumPAR = par.reduce((a, b) => a + b * 0.0036, 0).toFixed(2);
+  const maxPPFD = Math.max(...ppfd).toFixed(0);
+  const avgPPFD = (ppfd.reduce((a, b) => a + b, 0) / ppfd.length).toFixed(0);
+  const sumRain = rain.reduce((a, b) => a + b, 0).toFixed(1);
+
+  html += `
+      <tr style="background:#ddd; font-weight:bold;">
+        <td>サマリー</td>
+        <td>最高 ${maxT} / 平均 ${avgT} / 最低 ${minT}</td>
+        <td>最大 ${maxSWraw} / 平均 ${avgSWraw}</td>
+        <td>${sumSW}</td>
+        <td>平均 ${avgDiffuseFraction}</td>
+        <td>最大 ${maxPARraw} / 平均 ${avgPARraw}</td>
+        <td>${sumPAR}</td>
+        <td>最大 ${maxPPFD} / 平均 ${avgPPFD}</td>
+        <td>${sumRain}</td>
+      </tr>
+  `;
+
+  html += `</table></div></div>`;
+  document.getElementById("daily-summary").innerHTML = html;
+}
+
+/* ▼ 1時間ごとの集計の表示/非表示を切り替え（デフォルト非表示） */
+function toggleHourlySummary() {
+  const content = document.getElementById("hourly-toggle-content");
+  const btn = document.getElementById("hourly-toggle-btn");
+  if (!content || !btn) return;
+  const isOpen = content.classList.toggle("open");
+  btn.classList.toggle("open", isOpen);
+}
+
+/* ▼ 用語の説明の表示/非表示を切り替え（デフォルト非表示） */
+function toggleGlossary() {
+  const content = document.getElementById("glossary-toggle-content");
+  const btn = document.getElementById("glossary-toggle-btn");
+  if (!content || !btn) return;
+  const isOpen = content.classList.toggle("open");
+  btn.classList.toggle("open", isOpen);
+}
+
+/* ▼ 日別集計テーブル生成 */
+function buildDailySummary(data) {
+
+  const times = data.hourly.time;
+  const temp = data.hourly.temperature_2m;
+  const rain = data.hourly.rain;
+  const sw = data.hourly.shortwave_radiation;
+  const direct = data.hourly.direct_radiation;
+  const diffuse = data.hourly.diffuse_radiation;
+  const par = sw.map((_, i) => calcPar(direct[i], diffuse[i]));
+  const ppfd = par.map(parToPpfd);
+
+  const daily = {};
+
+  for (let i = 0; i < times.length; i++) {
+    // Open-Meteoの時刻はJST固定なので、日付部分を直接使用する。
+    const key = times[i].slice(0, 10);
+
+    if (!daily[key]) {
+      daily[key] = { temps: [], rains: [], sws: [], pars: [], dlis: [], swRaw: [], diffuseRaw: [] };
+    }
+
+    daily[key].temps.push(temp[i]);
+    daily[key].rains.push(rain[i]);
+    daily[key].sws.push(sw[i] * 0.0036); // MJ/m² に変換
+    daily[key].pars.push(par[i] * 0.0036); // PAR も MJ/m² に変換
+    daily[key].dlis.push(ppfd[i] * 0.0036); // PPFD(μmol/m²/s) → mol/m²（1時間分）に変換し、DLIとして積算
+    daily[key].swRaw.push(sw[i]);
+    daily[key].diffuseRaw.push(diffuse[i]);
+  }
+
+  let html = `
+    <h3>1日ごとの集計</h3>
+    <div class="table-scroll">
+    <table border="1" cellpadding="6" style="border-collapse: collapse;">
+      <tr style="background:#eee;">
+        <th>日付</th>
+        <th>最高気温</th>
+        <th>平均気温</th>
+        <th>最低気温</th>
+        <th>短波放射 (MJ/m²/日)</th>
+        <th>散乱光比率 (%)</th>
+        <th>PAR (MJ/m²/日)</th>
+        <th>DLI (mol/m²/日)</th>
+        <th>雨量 (mm/日)</th>
+        <th>日出</th>
+        <th>日入</th>
+      </tr>
+  `;
+
+  const allMaxT = [];
+  const allAvgT = [];
+  const allMinT = [];
+  let totalSW = 0;
+  let totalPAR = 0;
+  let totalDLI = 0;
+  let totalRain = 0;
+  let totalSWraw = 0;
+  let totalDiffuseRaw = 0;
+
+  for (const day in daily) {
+    const t = daily[day].temps;
+    const r = daily[day].rains;
+    const s = daily[day].sws;
+    const p = daily[day].pars;
+    const dl = daily[day].dlis;
+    const swRawArr = daily[day].swRaw;
+    const diffuseRawArr = daily[day].diffuseRaw;
+
+    const maxT = Math.max(...t);
+    const avgT = t.reduce((a, b) => a + b, 0) / t.length;
+    const minT = Math.min(...t);
+
+    const sumSW = s.reduce((a, b) => a + b, 0);
+    const sumPAR = p.reduce((a, b) => a + b, 0);
+    const sumDLI = dl.reduce((a, b) => a + b, 0);
+    const sumRain = r.reduce((a, b) => a + b, 0);
+    const sumSWraw = swRawArr.reduce((a, b) => a + b, 0);
+    const sumDiffuseRaw = diffuseRawArr.reduce((a, b) => a + b, 0);
+    const dayDiffuseFraction = calcDiffuseFraction(sumSWraw, sumDiffuseRaw);
+    const sunTimes = getSunTimeStrings(day, lat, lon);
+
+    allMaxT.push(maxT);
+    allAvgT.push(avgT);
+    allMinT.push(minT);
+    totalSW += sumSW;
+    totalPAR += sumPAR;
+    totalDLI += sumDLI;
+    totalRain += sumRain;
+    totalSWraw += sumSWraw;
+    totalDiffuseRaw += sumDiffuseRaw;
+
+    html += `
+      <tr>
+        <td class="day-link" onclick="showDayDetail('${day}')">${day}</td>
+        <td>${maxT.toFixed(1)}</td>
+        <td>${avgT.toFixed(1)}</td>
+        <td>${minT.toFixed(1)}</td>
+        <td>${sumSW.toFixed(2)}</td>
+        <td>${dayDiffuseFraction.toFixed(0)}</td>
+        <td>${sumPAR.toFixed(2)}</td>
+        <td>${sumDLI.toFixed(1)}</td>
+        <td>${sumRain.toFixed(1)}</td>
+        <td>${sunTimes.sunrise}</td>
+        <td>${sunTimes.sunset}</td>
+      </tr>
+    `;
+  }
+
+  /* ▼ サマリー行（最高気温:全日の最高、平均気温:各日平均の平均、最低気温:全日の最低、散乱光比率:期間平均、短波放射・PAR・DLI・雨量:積算値） */
+  const summaryMaxT = Math.max(...allMaxT).toFixed(1);
+  const summaryAvgT = (allAvgT.reduce((a, b) => a + b, 0) / allAvgT.length).toFixed(1);
+  const summaryMinT = Math.min(...allMinT).toFixed(1);
+  const summarySW = totalSW.toFixed(2);
+  const summaryDiffuseFraction = calcDiffuseFraction(totalSWraw, totalDiffuseRaw).toFixed(0);
+  const summaryPAR = totalPAR.toFixed(2);
+  const summaryDLI = totalDLI.toFixed(1);
+  const summaryRain = totalRain.toFixed(1);
+
+  html += `
+      <tr style="background:#ddd; font-weight:bold;">
+        <td>サマリー</td>
+        <td>${summaryMaxT}</td>
+        <td>${summaryAvgT}</td>
+        <td>${summaryMinT}</td>
+        <td>${summarySW}</td>
+        <td>${summaryDiffuseFraction}</td>
+        <td>${summaryPAR}</td>
+        <td>${summaryDLI}</td>
+        <td>${summaryRain}</td>
+        <td>-</td>
+        <td>-</td>
+      </tr>
+  `;
+
+  html += `</table></div>`;
+  document.getElementById("daily-summary").innerHTML = html;
+}
+
+/* ▼ グラフ描画 */
+function loadChart() {
+
+  if (!lat || !lon) return;
+
+  let rangeValue = 1;
+  if (Math.abs(dayOffset) === 3) rangeValue = 3;
+  if (Math.abs(dayOffset) === 7) rangeValue = 7;
+  if (Math.abs(dayOffset) === 15) rangeValue = 15;
+
+  let start, end;
+
+  if (dayOffset >= 0) {
+    start = addDays(0);
+    end   = addDays(rangeValue - 1);
+  } else {
+    start = addDays(-(rangeValue - 1));
+    end   = addDays(0);
+  }
+
+  const url =
+    `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
+    `&start_date=${start}&end_date=${end}` +
+    `&hourly=temperature_2m,shortwave_radiation,direct_radiation,diffuse_radiation,rain` +
+    `&timezone=${PHOTEOSYNC_TIMEZONE}`;
+
+  document.getElementById("back-to-daily").style.display = "none";
+
+  const titleText = (dayOffset === 0) ? getJSTDateJapanese() : null;
+
+  fetch(url)
+    .then(res => res.json())
+    .then(data => {
+      currentData = data;
+      renderChart(data, rangeValue, titleText);
+
+      /* ▼ 集計テーブル生成：本日選択時のみ時間別、それ以外は日別 */
+      if (dayOffset === 0) {
+        buildHourlySummary(data);
+      } else {
+        buildDailySummary(data);
+      }
+
+    });
+}
+
+/* ▼ CSVダウンロード共通処理（Blob生成〜保存） */
+function downloadCSV(rows, filenamePrefix, startDate, endDate) {
+  const csv = "\uFEFF" + rows.map(r => r.join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+
+  const filename = endDate && endDate !== startDate
+    ? `${filenamePrefix}_${startDate}_${endDate}.csv`
+    : `${filenamePrefix}_${startDate}.csv`;
+
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/* ▼ 現在表示中のデータを1時間ごとのCSVとしてダウンロード */
+function exportHourlyCSV() {
+  if (!currentData || !currentData.hourly) {
+    alert("ダウンロードできるデータがありません。");
+    return;
+  }
+
+  const times = currentData.hourly.time;
+  const temp = currentData.hourly.temperature_2m;
+  const rain = currentData.hourly.rain;
+  const sw = currentData.hourly.shortwave_radiation;
+  const direct = currentData.hourly.direct_radiation;
+  const diffuse = currentData.hourly.diffuse_radiation;
+  const par = sw.map((_, i) => calcPar(direct[i], diffuse[i]));
+  const ppfd = par.map(parToPpfd);
+  const diffuseFraction = sw.map((v, i) => calcDiffuseFraction(v, diffuse[i]));
+
+  const rows = [["日時", "気温(°C)", "短波放射(W/m²)", "短波放射(MJ/m²)", "散乱光比率(%)", "PAR(W/m²)", "PAR(MJ/m²)", "PPFD(μmol/m²/s)", "降雨量(mm)"]];
+
+  for (let i = 0; i < times.length; i++) {
+    rows.push([
+      times[i],
+      temp[i],
+      sw[i],
+      (sw[i] * 0.0036).toFixed(2),
+      diffuseFraction[i].toFixed(0),
+      par[i].toFixed(1),
+      (par[i] * 0.0036).toFixed(2),
+      ppfd[i].toFixed(0),
+      rain[i]
+    ]);
+  }
+
+  const startDate = times[0] ? times[0].slice(0, 10) : "data";
+  const endDate = times[times.length - 1] ? times[times.length - 1].slice(0, 10) : "";
+  downloadCSV(rows, "photeosync_hourly", startDate, endDate);
+}
+
+/* ▼ 現在表示中のデータを日ごとに集計してCSVとしてダウンロード
+      （buildDailySummaryと同じ集計ロジックを使用） */
+function exportDailyCSV() {
+  if (!currentData || !currentData.hourly) {
+    alert("ダウンロードできるデータがありません。");
+    return;
+  }
+
+  const times = currentData.hourly.time;
+  const temp = currentData.hourly.temperature_2m;
+  const rain = currentData.hourly.rain;
+  const sw = currentData.hourly.shortwave_radiation;
+  const direct = currentData.hourly.direct_radiation;
+  const diffuse = currentData.hourly.diffuse_radiation;
+  const par = sw.map((_, i) => calcPar(direct[i], diffuse[i]));
+  const ppfd = par.map(parToPpfd);
+
+  const daily = {};
+
+  for (let i = 0; i < times.length; i++) {
+    // Open-Meteoの時刻はJST固定なので、日付部分を直接使用する。
+    const key = times[i].slice(0, 10);
+
+    if (!daily[key]) {
+      daily[key] = { temps: [], rains: [], sws: [], pars: [], dlis: [], swRaw: [], diffuseRaw: [] };
+    }
+
+    daily[key].temps.push(temp[i]);
+    daily[key].rains.push(rain[i]);
+    daily[key].sws.push(sw[i] * 0.0036);
+    daily[key].pars.push(par[i] * 0.0036);
+    daily[key].dlis.push(ppfd[i] * 0.0036);
+    daily[key].swRaw.push(sw[i]);
+    daily[key].diffuseRaw.push(diffuse[i]);
+  }
+
+  const rows = [["日付", "最高気温(°C)", "平均気温(°C)", "最低気温(°C)", "短波放射(MJ/m²/日)", "散乱光比率(%)", "PAR(MJ/m²/日)", "DLI(mol/m²/日)", "雨量(mm/日)", "日出", "日入"]];
+
+  const dayKeys = Object.keys(daily);
+
+  for (const day of dayKeys) {
+    const t = daily[day].temps;
+    const r = daily[day].rains;
+    const s = daily[day].sws;
+    const p = daily[day].pars;
+    const dl = daily[day].dlis;
+    const swRawArr = daily[day].swRaw;
+    const diffuseRawArr = daily[day].diffuseRaw;
+
+    const maxT = Math.max(...t);
+    const avgT = t.reduce((a, b) => a + b, 0) / t.length;
+    const minT = Math.min(...t);
+
+    const sumSW = s.reduce((a, b) => a + b, 0);
+    const sumPAR = p.reduce((a, b) => a + b, 0);
+    const sumDLI = dl.reduce((a, b) => a + b, 0);
+    const sumRain = r.reduce((a, b) => a + b, 0);
+    const sumSWraw = swRawArr.reduce((a, b) => a + b, 0);
+    const sumDiffuseRaw = diffuseRawArr.reduce((a, b) => a + b, 0);
+    const dayDiffuseFraction = calcDiffuseFraction(sumSWraw, sumDiffuseRaw);
+    const sunTimes = getSunTimeStrings(day, lat, lon);
+
+    rows.push([
+      day,
+      maxT.toFixed(1),
+      avgT.toFixed(1),
+      minT.toFixed(1),
+      sumSW.toFixed(2),
+      dayDiffuseFraction.toFixed(0),
+      sumPAR.toFixed(2),
+      sumDLI.toFixed(1),
+      sumRain.toFixed(1),
+      sunTimes.sunrise,
+      sunTimes.sunset
+    ]);
+  }
+
+  const startDate = dayKeys[0] || (times[0] ? times[0].slice(0, 10) : "data");
+  const endDate = dayKeys[dayKeys.length - 1] || startDate;
+  downloadCSV(rows, "photeosync_daily", startDate, endDate);
+}
+
+/* ▼ 日別集計テーブルの日付をタップした際に、その日1日分のグラフ・時間別テーブルを表示 */
+function showDayDetail(dateStr) {
+
+  if (!lat || !lon) return;
+
+  const url =
+    `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
+    `&start_date=${dateStr}&end_date=${dateStr}` +
+    `&hourly=temperature_2m,shortwave_radiation,direct_radiation,diffuse_radiation,rain` +
+    `&timezone=${PHOTEOSYNC_TIMEZONE}`;
+
+  fetch(url)
+    .then(res => res.json())
+    .then(data => {
+      currentData = data;
+      renderChart(data, 1, dateStr);
+      buildHourlySummary(data);
+      document.getElementById("back-to-daily").style.display = "block";
+    });
+}
+
+/* ▼ 日別詳細表示から、元の期間表示（現在選択中の日付ボタン）へ戻る */
+function backToRangeView() {
+  document.getElementById("back-to-daily").style.display = "none";
+  loadChart();
+}
+
+/* ▼ グラフ描画本体（期間表示・日別詳細表示の両方から呼び出す共通処理） */
+function renderChart(data, rangeValue, titleText) {
+
+  let t;
+  if (rangeValue >= 2) {
+    t = data.hourly.time.map(x => {
+      // Open-MeteoのJST文字列を直接表示。ブラウザTZには依存しない。
+      const m = x.slice(5, 7);
+      const day = x.slice(8, 10);
+      const hh = x.slice(11, 13);
+      const mm = x.slice(14, 16);
+      return `${m}/${day} ${hh}:${mm}`;
+    });
+  } else {
+    t = data.hourly.time.map(x => x.slice(11, 16));
+  }
+
+  const temp = data.hourly.temperature_2m;
+  const rain = data.hourly.rain;
+  const sw = data.hourly.shortwave_radiation;
+  const sw_mj = sw.map(v => v * 0.0036);
+  const direct = data.hourly.direct_radiation;
+  const diffuse = data.hourly.diffuse_radiation;
+  const par = sw.map((_, i) => calcPar(direct[i], diffuse[i]));
+
+  /* ▼ データ点数に応じて横幅を決める。点数が少ない時は画面幅に収まり、
+        点数が多い時（複数日表示）だけ横スクロールが発生する */
+  const chartInner = document.getElementById("chart-inner");
+  const chartWrapper = chartInner.parentElement;
+  const pxPerPoint = 14;
+  const desiredWidth = t.length * pxPerPoint;
+  const wrapperWidth = chartWrapper.clientWidth;
+  chartInner.style.width = Math.max(wrapperWidth, desiredWidth) + "px";
+
+  if (window.chartInstance) window.chartInstance.destroy();
+
+  const dayBackgroundPlugin = {
+    id: "dayBackground",
+  
+    beforeDraw(chart) {
+      const ctx = chart.ctx;
+      const xAxis = chart.scales.x;
+      const rawTimes = data.hourly.time; // Open-Meteo: Asia/Tokyo（JST）
+  
+      if (!lat || !lon || !rawTimes.length) return;
+  
+      const sunCache = {};
+  
+      function getXForDateTime(dateTimeStr) {
+        // JSTの壁時計時刻をそのまま比較するため、DateのローカルTZ解釈を使わない。
+        let targetDateTimeStr = dateTimeStr;
+        if (dateTimeStr.endsWith("T24:00")) {
+          targetDateTimeStr = addJSTDays(dateTimeStr.slice(0, 10), 1) + "T00:00";
+        }
+
+        const target = jstIsoToMs(targetDateTimeStr);
+        if (!Number.isFinite(target)) return NaN;
+
+        for (let i = 0; i < rawTimes.length - 1; i++) {
+          const t1 = jstIsoToMs(rawTimes[i]);
+          const t2 = jstIsoToMs(rawTimes[i + 1]);
+
+          if (target >= t1 && target <= t2) {
+            const x1 = xAxis.getPixelForValue(i);
+            const x2 = xAxis.getPixelForValue(i + 1);
+            const ratio = (target - t1) / (t2 - t1);
+            return x1 + (x2 - x1) * ratio;
+          }
+        }
+
+        if (target < jstIsoToMs(rawTimes[0])) {
+          return xAxis.getPixelForValue(0);
+        }
+
+        return xAxis.getPixelForValue(rawTimes.length - 1);
+      }
+  
+      const dates = [...new Set(rawTimes.map(t => t.slice(0, 10)))];
+  
+      ctx.save();
+
+      // グラフ領域を最初に完全な白で塗りつぶす。
+      // その上に夜間だけグレーを重ねることで、背景を「白／グレー」の2色に固定。
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(
+        chart.chartArea.left,
+        chart.chartArea.top,
+        chart.chartArea.right - chart.chartArea.left,
+        chart.chartArea.bottom - chart.chartArea.top
+      );
+
+      ctx.beginPath();
+      ctx.rect(
+        chart.chartArea.left,
+        chart.chartArea.top,
+        chart.chartArea.right - chart.chartArea.left,
+        chart.chartArea.bottom - chart.chartArea.top
+      );
+      ctx.clip();
+  
+      for (const dPart of dates) {
+        if (!sunCache[dPart]) {
+          sunCache[dPart] =
+            getSunTimes(dPart, Number(lat), Number(lon));
+        }
+  
+        const sun = sunCache[dPart];
+        const nightRanges = [];
+  
+        if (sun.polarNight) {
+          nightRanges.push({
+            start: `${dPart}T00:00`,
+            end: `${dPart}T24:00`
+          });
+        } else if (!sun.polarDay) {
+          // 日の出前
+          nightRanges.push({
+            start: `${dPart}T00:00`,
+            end: `${dPart}T${formatDecimalHour(sun.sunrise)}`
+          });
+  
+          // 日の入り後
+          nightRanges.push({
+            start: `${dPart}T${formatDecimalHour(sun.sunset)}`,
+            end: `${dPart}T24:00`
+          });
+        }
+  
+        for (const range of nightRanges) {
+          const xStart = getXForDateTime(range.start);
+          const xEnd = getXForDateTime(range.end);
+  
+          if (!Number.isFinite(xStart) || !Number.isFinite(xEnd)) {
+            continue;
+          }
+  
+          ctx.fillStyle = "#d0d0d0";
+          ctx.fillRect(
+            xStart,
+            chart.chartArea.top,
+            xEnd - xStart,
+            chart.chartArea.bottom - chart.chartArea.top
+          );
+        }
+      }
+  
+      ctx.restore();
+    }
+  };
+  
+    window.chartInstance = new Chart(document.getElementById("chart"), {
+    type: "line",
+    plugins: [dayBackgroundPlugin],
+    data: {
+      labels: t,
+      datasets: [
+        { label: "気温 (°C)", data: temp, borderColor: "green", fill: false, yAxisID: "y" },
+        { label: "短波放射 (W/m²)", data: sw, borderColor: "orange", fill: false, yAxisID: "y1" },
+        { label: "PAR (W/m²)", data: par, borderColor: "purple", borderDash: [5, 5], fill: false, yAxisID: "y1" },
+        { label: "短波放射 (MJ/m²)", data: sw_mj, type: "bar", backgroundColor: "rgba(255,0,0,0.5)", yAxisID: "y" },
+        { label: "降雨量 (mm)", data: rain, type: "bar", backgroundColor: "blue", yAxisID: "y" }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+
+      plugins: {
+        title: {
+          display: !!titleText,
+          text: titleText || "",
+          font: { size: 16 },
+          padding: { top: 4, bottom: 12 }
+        },
+
+        tooltip: {
+          mode: "index",
+          intersect: false,
+          titleFont: { size: 18 },
+          bodyFont: { size: 18 },
+          padding: 12,
+          bodySpacing: 8,
+          titleSpacing: 8,
+          caretSize: 8,
+          callbacks: {
+            label: function(context) {
+              const label = context.dataset.label;
+              const value = context.raw;
+
+              if (label.includes("短波放射 (W/m²)")) {
+                const index = context.dataIndex;
+                return `短波放射 (W/m²): ${sw[index]}`;
+              }
+              if (label.includes("PAR (W/m²)")) {
+                const index = context.dataIndex;
+                return `PAR (W/m²): ${par[index].toFixed(1)}`;
+              }
+              if (label.includes("MJ/m²")) {
+                return `短波放射 (MJ/m²): ${value.toFixed(2)}`;
+              }
+              if (label.includes("気温")) {
+                return `気温 (°C): ${value}`;
+              }
+              if (label.includes("降雨量")) {
+                return `降雨量 (mm): ${value}`;
+              }
+              return `${label}: ${value}`;
+            }
+          }
+        },
+
+      },
+
+      hover: { mode: "index", intersect: false },
+
+      scales: {
+        y: {
+          type: "linear",
+          position: "left",
+          title: { display: true, text: "気温・降雨量" }
+        },
+
+        y1: {
+          type: "linear",
+          position: "right",
+          suggestedMax: Math.max(...sw) * 0.75,
+          suggestedMin: 0,
+          title: { display: true, text: "短波放射 (W/m²) / MJ/m²" },
+          grid: { drawOnChartArea: false }
+        },
+
+        x: {
+          title: {
+            display: true,
+            text: (rangeValue >= 2) ? "日付＋時刻" : "時間（時刻のみ）"
+          }
+        }
+      }
+    }
+  });
+}
+
+</script>
+</body>
+</html>

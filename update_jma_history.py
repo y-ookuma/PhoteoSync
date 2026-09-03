@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""PhoteoSync JMA API one-station smoke test.
+"""PhoteoSync JMA API five-station smoke test.
 
 Purpose:
   Verify that GitHub Actions can reach JMA's Past Weather Data Download API
@@ -79,7 +79,7 @@ def csv_preview(content: bytes) -> str:
 
 
 def main() -> int:
-    print("=== PhoteoSync JMA one-station smoke test ===")
+    print("=== PhoteoSync JMA five-station smoke test ===")
     print(f"Time (UTC): {datetime.now(UTC).isoformat()}")
     print(f"Station: {STATION_ID} ({STATION_NAME})")
     print(f"Years: {START_YEAR}-{END_YEAR}")
@@ -106,7 +106,7 @@ def main() -> int:
 
         time.sleep(2)
         data = make_payload()
-        print("[2/3] POST one station to JMA ...", flush=True)
+        print("[2/3] POST five stations to JMA ...", flush=True)
         print(f"      stationNumList={data['stationNumList']}", flush=True)
         print(f"      interAnnualType={data['interAnnualType']}", flush=True)
 
@@ -142,7 +142,7 @@ def main() -> int:
         print(preview[:5000])
         print()
         print("=== SUCCESS ===")
-        print("JMA API accepted the one-station request.")
+        print("JMA API accepted the five-station request.")
         print("The next step can safely test a small multi-station batch.")
         return 0
 

@@ -27,7 +27,7 @@ OUTPUT = Path("data/svgjma-history.json")
 
 # Keep requests moderate because JMA explicitly asks users not to make excessive
 # automated requests.
-BATCH_SIZE = 100
+BATCH_SIZE = 5
 REQUEST_PAUSE_SECONDS = 2.0
 REQUEST_TIMEOUT = 120
 ELEMENTS = [["201", ""], ["202", ""], ["203", ""], ["101", ""]]
@@ -69,7 +69,7 @@ def get_stations(session: requests.Session) -> list[dict[str, Any]]:
         elems = str(s.get("elems") or "")
         if len(elems) < 2 or elems[0] == "0" or elems[1] == "0":
             continue
-        obsdl_id = f"a{int(sid):04d}"
+        obsdl_id = f"a{sid}"
         stations.append({
             "id": str(sid),
             "obsdlId": obsdl_id,
@@ -92,6 +92,7 @@ def payload(station_ids: list[str], start_year: int, start_month: int, start_day
         "stationNumList": json.dumps(station_ids, ensure_ascii=False, separators=(",", ":")),
         "aggrgPeriod": "1",
         "elementNumList": json.dumps(ELEMENTS, separators=(",", ":")),
+        # Current JMA obsdl accepts interAnnualType for same-period comparison.
         "interAnnualType": "2",
         "ymdList": json.dumps(ymd, separators=(",", ":")),
         "optionNumList": "[]",
@@ -101,6 +102,11 @@ def payload(station_ids: list[str], start_year: int, start_month: int, start_day
         "huukouFlag": "0",
         "youbiFlag": "0",
         "fukenFlag": "0",
+        "downloadFlag": "true",
+        "csvFlag": "1",
+        "jikantaiFlag": "0",
+        "jikantaiList": "[]",
+        "ymdLiteral": "1",
     }
 
 
@@ -195,15 +201,27 @@ def fetch_segment(session: requests.Session, stations: list[dict[str, Any]], yea
     for pos in range(0, len(stations), BATCH_SIZE):
         batch = stations[pos:pos + BATCH_SIZE]
         ids = [s["obsdlId"] for s in batch]
-        data = payload(ids, min(years), start_month, start_day, max(years), end_month, end_day)
         for attempt in range(3):
             try:
+                # Match the currently documented/working obsdl request flow:
+                # GET index.php first, wait briefly, then POST the normal form.
+                # AMeDAS station IDs are sent as a-prefixed IDs (e.g. a0179).
                 top = session.get(OBSDL_INDEX_URL, timeout=REQUEST_TIMEOUT)
                 top.raise_for_status()
                 time.sleep(REQUEST_PAUSE_SECONDS)
+                data = payload(ids, min(years), start_month, start_day, max(years), end_month, end_day)
                 r = session.post(OBSDL_TABLE_URL, data=data,
-                                 headers={"Referer": OBSDL_INDEX_URL}, timeout=REQUEST_TIMEOUT)
-                r.raise_for_status()
+                                 headers={"Referer": OBSDL_INDEX_URL},
+                                 timeout=REQUEST_TIMEOUT)
+                if r.status_code >= 400:
+                    body = r.content.decode("utf-8-sig", errors="replace")
+                    if not body.strip():
+                        body = r.content.decode("cp932", errors="replace")
+                    preview = re.sub(r"\s+", " ", body).strip()[:2000]
+                    raise RuntimeError(
+                        f"JMA HTTP {r.status_code}; stations={ids}; "
+                        f"payload={data}; response={preview!r}"
+                    )
                 if len(r.content) < 100:
                     raise RuntimeError("JMA returned an unexpectedly small response")
                 parsed = parse_batch(r.content, batch)
@@ -262,8 +280,9 @@ def main() -> None:
 
     session = requests.Session()
     session.headers.update({
-        "User-Agent": "PhoteoSync/1.0 (GitHub Actions; JMA historical data updater)",
-        "Accept-Language": "ja,en;q=0.8",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
     })
     stations = get_stations(session)
     print(f"AMeDAS stations: {len(stations)}")

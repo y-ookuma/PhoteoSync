@@ -188,6 +188,23 @@
     color: #2196F3;
     word-break: break-all;
   }
+
+  #back-to-5year {
+    display: none;
+    margin-bottom: 10px;
+    padding: 8px 14px;
+    font-size: 0.9rem;
+    border: 1px solid #888;
+    border-radius: 6px;
+    background: #f0f0f0;
+    cursor: pointer;
+  }
+  .five-year-chart-title { font-weight: bold; text-align: center; margin: 4px 0 8px; }
+  .five-year-chart-wrapper { width: 100%; height: 360px; margin-bottom: 24px; overflow-x: auto; }
+  .five-year-chart-inner { height: 320px; min-width: 700px; }
+  #jma-station-info { display:none; margin:4px 0 12px; padding:8px 12px; border-radius:6px; background:#f7f7f7; font-size:.85rem; line-height:1.5; }
+  .jma-note { font-size:.75rem; color:#777; margin-top:5px; }
+  .jma-loading { padding:12px; text-align:center; color:#666; }
 </style>
 </head>
 <body>
@@ -216,6 +233,9 @@
   </div>
 
   <button id="back-to-daily" onclick="backToRangeView()">← 期間表示に戻る</button>
+  <button id="back-to-5year" onclick="backToNormalView()">← 通常表示に戻る</button>
+  <div id="jma-station-info"></div>
+  <div id="five-year-charts"></div>
 
   <div class="chart-wrapper">
     <div class="chart-inner" id="chart-inner">
@@ -291,6 +311,7 @@
   <div style="display:flex; gap:8px; flex-wrap:wrap;">
     <button id="csv-export-hourly-btn" class="toggle-btn" onclick="exportHourlyCSV()">⬇ 1時間ごとCSV</button>
     <button id="csv-export-daily-btn" class="toggle-btn" onclick="exportDailyCSV()">⬇ 日計CSV</button>
+    <button id="five-year-btn" class="toggle-btn" onclick="showFiveYearAverages()">📈 過去5年・14日間</button>
   </div>
 
   <!-- ▼ ライセンス表記 -->
@@ -298,7 +319,7 @@
     This project is licensed under the MIT License.<br>
     Copyright (c) 2026 <a href="https://github.com/y-ookuma/PhoteoSync/blob/main/README.md" target="_blank" rel="noopener noreferrer">y-ookuma</a><br>
     <br>
-    This project uses weather data provided by Open‑Meteo.<br>
+    This project uses weather data provided by Open‑Meteo and the Japan Meteorological Agency (JMA).<br>
     Weather data by <a href="https://open-meteo.com/" target="_blank" rel="noopener noreferrer">Open‑Meteo.com</a>,
     licensed under <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener noreferrer">CC BY 4.0</a>.
   </footer>
@@ -1029,6 +1050,94 @@ function backToRangeView() {
 }
 
 /* ▼ グラフ描画本体（期間表示・日別詳細表示の両方から呼び出す共通処理） */
+
+/* ▼ 気象庁アメダス：現在地に最も近い地点の過去5年表示 */
+const JMA_AMEDAS_TABLE_URL = "https://www.jma.go.jp/bosai/amedas/const/amedastable.json";
+const JMA_DAILY_URL = "https://www.data.jma.go.jp/stats/etrn/view/daily_a1.php";
+const JMA_PREF_CODES = {"北海道":"11","青森県":"31","岩手県":"33","宮城県":"34","秋田県":"32","山形県":"35","福島県":"36","茨城県":"40","栃木県":"41","群馬県":"42","埼玉県":"43","千葉県":"45","東京都":"44","神奈川県":"46","新潟県":"54","富山県":"55","石川県":"56","福井県":"57","山梨県":"49","長野県":"48","岐阜県":"52","静岡県":"50","愛知県":"51","三重県":"53","滋賀県":"60","京都府":"61","大阪府":"62","兵庫県":"63","奈良県":"64","和歌山県":"65","鳥取県":"69","島根県":"68","岡山県":"66","広島県":"67","徳島県":"71","香川県":"72","愛媛県":"73","高知県":"74","福岡県":"82","佐賀県":"85","長崎県":"84","熊本県":"86","大分県":"83","宮崎県":"87","鹿児島県":"88","沖縄県":"91"};
+let fiveYearCharts = [];
+function movingAverage(values, windowSize=7){const h=Math.floor(windowSize/2);return values.map((_,i)=>{let sum=0,count=0;for(let j=Math.max(0,i-h);j<=Math.min(values.length-1,i+h);j++){const v=values[j];if(Number.isFinite(v)){sum+=v;count++;}}return count?sum/count:null;});}
+function haversineKm(a,b,c,d){const R=6371,r=Math.PI/180,dl=(c-a)*r,dn=(d-b)*r,x=Math.sin(dl/2)**2+Math.cos(a*r)*Math.cos(c*r)*Math.sin(dn/2)**2;return R*2*Math.atan2(Math.sqrt(x),Math.sqrt(1-x));}
+function jmaCoord(p){return Number(p[0])+Number(p[1])/60;}
+function jmaValue(t){const s=String(t||"").replace(/\s/g,"").replace(/[＊*]$/g,"");if(!s||s==="///"||s==="--"||s==="×")return null;const n=Number(s);return Number.isFinite(n)?n:null;}
+async function getJMAPrefectureName(latitude,longitude){
+  const geo=await fetch(`https://mreversegeocoder.gsi.go.jp/reverse-geocoder/LonLatToAddress?lat=${latitude}&lon=${longitude}`,{cache:"no-store"}).then(r=>r.json());
+  const muniCd=geo?.results?.muniCd;
+  const row=muniCd&&window.GSI?.MUNI_ARRAY?window.GSI.MUNI_ARRAY[String(Number(muniCd))]:null;
+  return row?row.split(",")[1]:"";
+}
+async function findNearestJMAStations(latitude,longitude,limit=5){
+  const res=await fetch(JMA_AMEDAS_TABLE_URL,{cache:"no-store"});
+  if(!res.ok)throw new Error(`アメダス地点一覧を取得できませんでした (${res.status})`);
+  const table=await res.json(),stations=[];
+  for(const[id,st]of Object.entries(table)){
+    if(!st?.lat||!st?.lon||!st?.kjName)continue;
+    const slat=jmaCoord(st.lat),slon=jmaCoord(st.lon),distanceKm=haversineKm(latitude,longitude,slat,slon);
+    stations.push({id,...st,latDecimal:slat,lonDecimal:slon,distanceKm});
+  }
+  stations.sort((a,b)=>a.distanceKm-b.distanceKm);
+  return stations.slice(0,limit);
+}
+async function findNearestJMAStation(latitude,longitude){
+  const stations=await findNearestJMAStations(latitude,longitude,1);
+  if(!stations.length)throw new Error("利用可能なアメダス地点が見つかりませんでした。");
+  return stations[0];
+}
+async function getCurrentPrefectureName(){return getJMAPrefectureName(Number(lat),Number(lon));}
+async function fetchJmaMonth(station,prefName,year,month){const prefNo=JMA_PREF_CODES[prefName];if(!prefNo)throw new Error(`都府県コードが見つかりません: ${prefName||"不明"}`);const url=`${JMA_DAILY_URL}?prec_no=${prefNo}&block_no=${station.id}&year=${year}&month=${month}&day=&view=`;const res=await fetch(url,{cache:"no-store"});if(!res.ok)throw new Error(`気象庁 ${year}/${month} の取得に失敗しました (${res.status})`);const doc=new DOMParser().parseFromString(await res.text(),"text/html"),table=doc.querySelector("#tablefix1");if(!table)throw new Error(`${station.kjName} の ${year}/${month} データが見つかりませんでした。`);const out=[];for(const tr of table.querySelectorAll("tr")){const cells=[...tr.querySelectorAll("td")].map(td=>td.textContent.trim()),day=Number(cells[0]);if(!Number.isInteger(day)||day<1||day>31)continue;const rain=jmaValue(cells[1]),avg=jmaValue(cells[4]),max=jmaValue(cells[5]),min=jmaValue(cells[6]);out.push({date:`${year}-${String(month).padStart(2,"0")}-${String(day).padStart(2,"0")}`,rain,avg,max,min});}if(!out.length)throw new Error(`${station.kjName} の ${year}/${month} データが空でした。`);return out;}
+async function fetchJmaMonths(station,prefName,year,months){const uniqueMonths=[...new Set(months)].sort((a,b)=>a-b);return(await Promise.all(uniqueMonths.map(m=>fetchJmaMonth(station,prefName,year,m)))).flat();}
+function getComparisonDates(){const todayStr=getJSTDateString().slice(0,10);const end=new Date(`${todayStr}T00:00:00Z`);const dates=[];for(let i=13;i>=0;i--){const dt=new Date(end);dt.setUTCDate(end.getUTCDate()-i);dates.push(dt);}return dates;}
+function shiftDateToYear(dt,year){const month=dt.getUTCMonth(),day=dt.getUTCDate();if(month===1&&day===29){return new Date(Date.UTC(year,1,28));}return new Date(Date.UTC(year,month,day));}
+function normalizeJmaWindow(data,year,comparisonDates){const map=new Map(data.map(d=>[d.date.slice(5),d])),labels=[],min=[],avg=[],max=[],rain=[];for(const baseDate of comparisonDates){const dt=shiftDateToYear(baseDate,year),md=`${String(dt.getUTCMonth()+1).padStart(2,"0")}-${String(dt.getUTCDate()).padStart(2,"0")}`;labels.push(`${dt.getUTCMonth()+1}/${dt.getUTCDate()}`);const d=map.get(md);min.push(d?.min??null);avg.push(d?.avg??null);max.push(d?.max??null);rain.push(d?.rain??null);}return{labels,min,avg,max,rain};}
+function destroyFiveYearCharts(){fiveYearCharts.forEach(c=>c.destroy());fiveYearCharts=[];}
+function createFiveYearChart(title,unit,labels,series,windowSize,beginAtZero=false){const wrap=document.createElement("div");wrap.className="five-year-chart-wrapper";wrap.innerHTML=`<div class="five-year-chart-title">${title}</div><div class="five-year-chart-inner"><canvas></canvas></div>`;document.getElementById("five-year-charts").appendChild(wrap);const op=[1,.78,.58,.40,.24],datasets=series.map((s,i)=>({label:`${s.year}年`,data:movingAverage(s.values,windowSize),borderColor:`rgba(33,150,243,${op[i]})`,backgroundColor:"transparent",borderWidth:i===0?3:2,pointRadius:0,tension:.15,spanGaps:true}));const chart=new Chart(wrap.querySelector("canvas"),{type:"line",data:{labels,datasets},options:{responsive:true,maintainAspectRatio:false,interaction:{mode:"index",intersect:false},plugins:{legend:{position:"top"},tooltip:{callbacks:{label:ctx=>`${ctx.dataset.label}: ${ctx.raw==null?"--":Number(ctx.raw).toFixed(1)} ${unit}`}}},scales:{x:{ticks:{maxTicksLimit:16},title:{display:true,text:"月日"}},y:{beginAtZero,title:{display:true,text:unit}}}}});fiveYearCharts.push(chart);}
+async function showFiveYearAverages(){
+  if(!lat||!lon){alert("現在地が取得できていません。");return;}
+  const container=document.getElementById("five-year-charts"),info=document.getElementById("jma-station-info");
+  destroyFiveYearCharts();
+  container.innerHTML='<div class="jma-loading">気象庁アメダスから過去5年・本日を含む14日間のデータを取得しています…<br>近い地点から順番に最大5地点まで試します。</div>';
+  document.querySelector(".chart-wrapper").style.display="none";
+  document.getElementById("daily-summary").style.display="none";
+  document.querySelector(".day-buttons").parentElement.style.display="none";
+  document.getElementById("back-to-5year").style.display="block";
+  info.style.display="none";
+  try{
+    const candidates=await findNearestJMAStations(Number(lat),Number(lon),5);
+    if(!candidates.length)throw new Error("利用可能なアメダス地点が見つかりませんでした。");
+    const comparisonDates=getComparisonDates(),baseYear=Number(getJSTDateString().slice(0,4)),years=[0,1,2,3,4].map(n=>baseYear-n);
+    const failures=[];
+    for(let i=0;i<candidates.length;i++){
+      const station=candidates[i];
+      try{
+        const prefName=await getJMAPrefectureName(station.latDecimal,station.lonDecimal);
+        if(!prefName)throw new Error("地点の都道府県を判定できませんでした。");
+        const raw=await Promise.all(years.map(async y=>{
+          const dates=comparisonDates.map(d=>shiftDateToYear(d,y));
+          const months=[...new Set(dates.map(d=>d.getUTCMonth()+1))];
+          return fetchJmaMonths(station,prefName,y,months);
+        }));
+        const data=raw.map((d,idx)=>({year:years[idx],...normalizeJmaWindow(d,years[idx],comparisonDates)})),labels=data[0].labels;
+        info.innerHTML=`📍 <b>気象庁アメダス：${station.kjName}</b>　現在地から約${station.distanceKm.toFixed(1)} km<br>観測所座標：${station.latDecimal.toFixed(4)}, ${station.lonDecimal.toFixed(4)}<div class="jma-note">${i+1}番目の候補地点で取得成功。表示期間：本日を含む過去14日間（${labels[0]} ～ ${labels[labels.length-1]}）。気温3グラフは7日移動平均、雨量は14日移動平均。※ 気象庁アメダスの日別データにはOpen-Meteoの「短波放射(W/m²)」に相当する観測値がないため、この版では短波放射グラフを除外しています。</div>`;
+        info.style.display="block";container.innerHTML="";
+        createFiveYearChart("最低気温（7日移動平均）","°C",labels,data.map(d=>({year:d.year,values:d.min})),7);
+        createFiveYearChart("平均気温（7日移動平均）","°C",labels,data.map(d=>({year:d.year,values:d.avg})),7);
+        createFiveYearChart("最高気温（7日移動平均）","°C",labels,data.map(d=>({year:d.year,values:d.max})),7);
+        createFiveYearChart("降水量（14日移動平均）","mm/日",labels,data.map(d=>({year:d.year,values:d.rain})),14,true);
+        return;
+      }catch(err){
+        console.error(`JMA station ${station.kjName} failed`,err);
+        failures.push({station,error:err?.message||String(err)});
+      }
+    }
+    const list=failures.map((f,i)=>`${i+1}. ${f.station.kjName}（現在地から約${f.station.distanceKm.toFixed(1)} km）<br><span style="font-size:.75rem;color:#777;">${f.error}</span>`).join("<br>");
+    container.innerHTML=`<div class="jma-loading"><b>気象庁データの取得に失敗しました。</b><br><br>現在地から近い順に5地点を試しましたが、すべて取得できませんでした。<div style="text-align:left;margin-top:12px;line-height:1.7;">${list}</div></div>`;
+  }catch(err){
+    console.error(err);
+    container.innerHTML=`<div class="jma-loading"><b>気象庁データの取得に失敗しました。</b><br>${err.message||err}</div>`;
+  }
+}
+function backToNormalView(){destroyFiveYearCharts();document.getElementById("five-year-charts").innerHTML="";document.getElementById("jma-station-info").style.display="none";document.getElementById("back-to-5year").style.display="none";document.querySelector(".chart-wrapper").style.display="block";document.getElementById("daily-summary").style.display="block";document.querySelector(".day-buttons").parentElement.style.display="block";loadChart();}
+
 function renderChart(data, rangeValue, titleText) {
 
   let t;

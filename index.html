@@ -311,7 +311,7 @@
   <div style="display:flex; gap:8px; flex-wrap:wrap;">
     <button id="csv-export-hourly-btn" class="toggle-btn" onclick="exportHourlyCSV()">⬇ 1時間ごとCSV</button>
     <button id="csv-export-daily-btn" class="toggle-btn" onclick="exportDailyCSV()">⬇ 日計CSV</button>
-    <button id="five-year-btn" class="toggle-btn" onclick="showFiveYearAverages()">📈 過去5年・14日間</button>
+    <button id="five-year-btn" class="toggle-btn" onclick="showFiveYearAverages()">📈 過去5年(気象庁)</button>
   </div>
 
   <!-- ▼ ライセンス表記 -->
@@ -1051,23 +1051,10 @@ function backToRangeView() {
 
 /* ▼ グラフ描画本体（期間表示・日別詳細表示の両方から呼び出す共通処理） */
 
-/* ▼ 気象庁アメダス：現在地に最も近い地点の過去5年表示
-   ------------------------------------------------------------------
-   取得方式を全面的に変更。
-   ・旧方式の daily_a1.php HTML スクレイピングは使用しない
-   ・AMeDAS の station id を、そのまま obsdl の aXXXX として使用
-   ・気象庁「過去の気象データ・ダウンロード」の日別CSVを利用
-   ・1地点×1年につき原則1リクエスト（14日間をまとめて取得）
-   ・本日分は気象庁の日別確定値がまだ公開されていないため、現在年の本日だけ null
-   ・GitHub Pages の CORS 制約に備え、直接接続→CORS プロキシの順で試す
-   ------------------------------------------------------------------ */
-const JMA_AMEDAS_TABLE_URL = "https://www.jma.go.jp/bosai/amedas/const/amedastable.json";
-const JMA_OBSDL_INDEX_URL = "https://www.data.jma.go.jp/risk/obsdl/index.php";
-const JMA_OBSDL_TABLE_URL = "https://www.data.jma.go.jp/risk/obsdl/show/table";
-const JMA_OBSDL_PROXY_URLS = [
-  "https://corsproxy.io/?url="
-];
+/* ▼ 気象庁アメダス：GitHub Actionsで生成したローカルJSONから過去5年表示 */
+const JMA_LOCAL_JSON_URL = "data/jma-history.json";
 let fiveYearCharts = [];
+let jmaHistoryCache = null;
 
 function movingAverage(values, windowSize=7){
   const h=Math.floor(windowSize/2);
@@ -1085,218 +1072,85 @@ function haversineKm(a,b,c,d){
   const x=Math.sin(dl/2)**2+Math.cos(a*r)*Math.cos(c*r)*Math.sin(dn/2)**2;
   return R*2*Math.atan2(Math.sqrt(x),Math.sqrt(1-x));
 }
-function jmaCoord(p){return Number(p[0])+Number(p[1])/60;}
-
-/* JMA の特殊表記を数値化。0+ / 10- なども扱う。 */
 function jmaValue(t){
-  let s=String(t??"").trim().replace(/\s/g,"");
-  if(!s || s==="///" || s==="--" || s==="×") return null;
-  if(/[+\-]$/.test(s) && !/^-/.test(s)) s=s.slice(0,-1);
+  const s=String(t??"").replace(/\s/g,"").replace(/[＊*]$/g,"");
+  if(!s||s==="///"||s==="--"||s==="×")return null;
   const n=Number(s);
   return Number.isFinite(n)?n:null;
 }
-
-function csvParseLine(line){
-  const out=[]; let cur="", quoted=false;
-  for(let i=0;i<line.length;i++){
-    const ch=line[i];
+function csvParse(text){
+  const rows=[];let row=[],cell="",quoted=false;
+  for(let i=0;i<text.length;i++){
+    const ch=text[i];
     if(ch==='"'){
-      if(quoted && line[i+1]==='"'){cur+='"';i++;}
+      if(quoted&&text[i+1]==='"'){cell+='"';i++;}
       else quoted=!quoted;
-    }else if(ch===',' && !quoted){out.push(cur);cur="";}
-    else cur+=ch;
+    }else if(ch===','&&!quoted){row.push(cell);cell="";}
+    else if((ch==='\n'||ch==='\r')&&!quoted){
+      if(ch==='\r'&&text[i+1]==='\n')i++;
+      row.push(cell);cell="";
+      if(row.some(v=>v!==""))rows.push(row);
+      row=[];
+    }else cell+=ch;
   }
-  out.push(cur);
-  return out;
+  if(cell!==""||row.length){row.push(cell);if(row.some(v=>v!==""))rows.push(row);}
+  return rows;
 }
-function parseCsvText(text){
-  const normalized=text.replace(/^\uFEFF/,"").replace(/\r\n/g,"\n").replace(/\r/g,"\n");
-  return normalized.split("\n").filter(line=>line.trim()!=="").map(csvParseLine);
-}
-
-async function fetchWithJMAProxy(target, options={}){
-  let lastError=null;
-  const attempts=[{url:target,proxy:false},...JMA_OBSDL_PROXY_URLS.map(prefix=>({url:prefix+encodeURIComponent(target),proxy:true}))];
-  for(const a of attempts){
-    try{
-      const res=await fetch(a.url,{...options,cache:"no-store"});
-      if(!res.ok) throw new Error(`HTTP ${res.status}`);
-      return res;
-    }catch(err){
-      lastError=err;
+function parseJmaBatch(text, stationNames){
+  const rows=csvParse(text);
+  if(!rows.length)return [];
+  let dataStart=-1;
+  for(let i=0;i<rows.length;i++){
+    if(/^20\d{2}[\/\-]\d{1,2}[\/\-]\d{1,2}/.test((rows[i][0]||"").trim())){dataStart=i;break;}
+  }
+  if(dataStart<0)return [];
+  const headers=rows.slice(0,dataStart);
+  const maxCols=Math.max(...rows.map(r=>r.length));
+  const colText=Array.from({length:maxCols},(_,c)=>headers.map(r=>r[c]||"").join(" "));
+  const out=[];
+  for(const name of stationNames){
+    let tempCol=-1,minCol=-1,maxCol=-1,rainCol=-1;
+    for(let c=0;c<maxCols;c++){
+      const h=colText[c];
+      if(!h.includes(name))continue;
+      if(tempCol<0&&/(平均気温|日平均気温)/.test(h))tempCol=c;
+      if(minCol<0&&/(最低気温|日最低気温)/.test(h))minCol=c;
+      if(maxCol<0&&/(最高気温|日最高気温)/.test(h))maxCol=c;
+      if(rainCol<0&&/(降水量|降水)/.test(h))rainCol=c;
+    }
+    if(tempCol<0||minCol<0||maxCol<0||rainCol<0)continue;
+    for(let r=dataStart;r<rows.length;r++){
+      const d=(rows[r][0]||"").trim().replace(/\//g,"-");
+      if(!/^20\d{2}-\d{1,2}-\d{1,2}$/.test(d))continue;
+      const [y,m,dd]=d.split("-").map(Number);
+      const iso=`${y}-${String(m).padStart(2,"0")}-${String(dd).padStart(2,"0")}`;
+      out.push({station:name,date:iso,temp:jmaValue(rows[r][tempCol]),min:jmaValue(rows[r][minCol]),max:jmaValue(rows[r][maxCol]),rain:jmaValue(rows[r][rainCol])});
     }
   }
-  throw lastError||new Error("JMAへの接続に失敗しました。");
+  return out;
 }
-
-async function fetchJMAStationTable(){
-  const res=await fetch(JMA_AMEDAS_TABLE_URL,{cache:"no-store"});
-  if(!res.ok) throw new Error(`アメダス地点一覧を取得できませんでした (${res.status})`);
-  return res.json();
+async function loadJmaHistory(){
+  if(jmaHistoryCache)return jmaHistoryCache;
+  const res=await fetch(`${JMA_LOCAL_JSON_URL}?v=${Date.now()}`,{cache:"no-store"});
+  if(!res.ok)throw new Error(`ローカルJMA JSONを取得できませんでした (${res.status})`);
+  jmaHistoryCache=await res.json();
+  return jmaHistoryCache;
 }
-
-async function findNearestJMAStations(latitude,longitude,limit=5){
-  const table=await fetchJMAStationTable();
-  const stations=[];
-  for(const[id,st]of Object.entries(table)){
-    if(!st?.lat||!st?.lon||!st?.kjName) continue;
-    const slat=jmaCoord(st.lat),slon=jmaCoord(st.lon);
-    const distanceKm=haversineKm(latitude,longitude,slat,slon);
-    /* 気温・降水量の両方を観測する AMeDAS を優先できるようにする */
-    const flags=String(st.type??"");
-    stations.push({
-      id:String(id).padStart(4,"0"),
-      ...st,
-      latDecimal:slat,
-      lonDecimal:slon,
-      distanceKm,
-      stationType:flags
-    });
-  }
-  stations.sort((a,b)=>a.distanceKm-b.distanceKm);
-  return stations.slice(0,limit);
-}
-
 function getComparisonDates(){
-  const todayStr=getJSTDateString();
-  const end=new Date(`${todayStr}T00:00:00Z`);
-  const dates=[];
-  for(let i=13;i>=0;i--){
-    const dt=new Date(end);
-    dt.setUTCDate(end.getUTCDate()-i);
-    dates.push(dt);
-  }
+  const todayStr=getJSTDateString().slice(0,10);
+  const end=new Date(`${todayStr}T00:00:00Z`),dates=[];
+  for(let i=13;i>=0;i--){const dt=new Date(end);dt.setUTCDate(end.getUTCDate()-i);dates.push(dt);}
   return dates;
 }
 function shiftDateToYear(dt,year){
   const month=dt.getUTCMonth(),day=dt.getUTCDate();
-  if(month===1&&day===29) return new Date(Date.UTC(year,1,28));
+  if(month===1&&day===29&&!(year%4===0&&(year%100!==0||year%400===0)))return new Date(Date.UTC(year,1,28));
   return new Date(Date.UTC(year,month,day));
-}
-function dateToYmd(d){
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,"0")}-${String(d.getUTCDate()).padStart(2,"0")}`;
-}
-
-/* obsdl 日別CSVのヘッダーを見て、値列を自動判定する。
-   これにより「列番号固定」に依存しない。 */
-function parseJmaDailyCsv(text, expectedStationName=""){
-  const rows=parseCsvText(text);
-  if(rows.length<7) throw new Error("気象庁CSVの行数が不足しています。");
-
-  const header0=rows[2]||[];
-  const header1=rows[3]||[];
-  const header2=rows[4]||[];
-  const header3=rows[5]||[];
-
-  const stationName=(header0.find(v=>v&&v.trim())||expectedStationName||"").trim();
-  const columns=[];
-  for(let i=0;i<Math.max(header0.length,header1.length,header2.length,header3.length);i++){
-    columns.push({
-      i,
-      station:(header0[i]||"").trim(),
-      element:(header1[i]||"").trim(),
-      sub:(header2[i]||"").trim(),
-      info:(header3[i]||"").trim()
-    });
-  }
-
-  function findValueColumn(names){
-    const c=columns.find(x=>names.some(n=>x.element.includes(n)) && !x.info.includes("品質") && !x.info.includes("均質") && !x.sub.includes("品質") && !x.sub.includes("均質") && !x.sub.includes("現象なし"));
-    return c?.i ?? -1;
-  }
-  const avgCol=findValueColumn(["平均気温"]);
-  const maxCol=findValueColumn(["最高気温"]);
-  const minCol=findValueColumn(["最低気温"]);
-  const rainCol=findValueColumn(["降水量の合計"]);
-  if(avgCol<0||maxCol<0||minCol<0||rainCol<0){
-    throw new Error(`日平均・日最高・日最低気温・日降水量の列を特定できませんでした。取得地点: ${stationName||expectedStationName||"不明"}`);
-  }
-
-  const out=[];
-  for(let r=6;r<rows.length;r++){
-    const row=rows[r];
-    const rawDate=String(row[0]||"").trim();
-    if(!rawDate) continue;
-    const m=/^(\d{4})\/(\d{1,2})\/(\d{1,2})/.exec(rawDate);
-    if(!m) continue;
-    const date=`${m[1]}-${String(Number(m[2])).padStart(2,"0")}-${String(Number(m[3])).padStart(2,"0")}`;
-    out.push({date,avg:jmaValue(row[avgCol]),max:jmaValue(row[maxCol]),min:jmaValue(row[minCol]),rain:jmaValue(row[rainCol])});
-  }
-  if(!out.length) throw new Error("気象庁CSVに日別データがありませんでした。");
-  return out;
-}
-
-/* obsdl は AMeDAS を aXXXX で指定する。旧コードの block_no 直接使用はしない。 */
-async function fetchJmaDailyYear(station,year,startDate,endDate){
-  const start=new Date(`${startDate}T00:00:00Z`);
-  const end=new Date(`${endDate}T00:00:00Z`);
-  if(end<start) return [];
-
-  const payload=new URLSearchParams();
-  payload.set("stationNumList",JSON.stringify([`a${String(station.id).padStart(4,"0")}`]));
-  payload.set("aggrgPeriod","1");
-  /* 日別値：平均気温・最高気温・最低気温・降水量日合計 */
-  payload.set("elementNumList",JSON.stringify([["201",""],["202",""],["203",""],["101",""]]));
-  payload.set("interAnnualType","1");
-  payload.set("ymdList",JSON.stringify([
-    String(start.getUTCFullYear()),String(end.getUTCFullYear()),
-    String(start.getUTCMonth()+1),String(end.getUTCMonth()+1),
-    String(start.getUTCDate()),String(end.getUTCDate())
-  ]));
-  payload.set("optionNumList",JSON.stringify([]));
-  payload.set("downloadFlag","true");
-  payload.set("rmkFlag","1");
-  payload.set("disconnectFlag","1");
-  payload.set("youbiFlag","0");
-  payload.set("fukenFlag","0");
-  payload.set("kijiFlag","0");
-  payload.set("huukouFlag","0");
-  payload.set("csvFlag","1");
-  payload.set("jikantaiFlag","0");
-  payload.set("jikantaiList",JSON.stringify([]));
-  payload.set("ymdLiteral","1");
-
-  let res;
-  try{
-    res=await fetchWithJMAProxy(JMA_OBSDL_TABLE_URL,{
-      method:"POST",
-      headers:{"Content-Type":"application/x-www-form-urlencoded;charset=UTF-8","Accept":"text/csv,text/plain,*/*"},
-      body:payload.toString()
-    });
-  }catch(err){
-    throw new Error(`気象庁のCSVサービスへ接続できませんでした: ${err?.message||err}`);
-  }
-
-  const buf=await res.arrayBuffer();
-  let text="";
-  const encodings=["shift-jis","utf-8"];
-  for(const enc of encodings){
-    try{
-      text=new TextDecoder(enc).decode(buf);
-      if(text.includes("年月日")||text.includes("データがありません")||text.includes("平均気温")) break;
-    }catch(_){ }
-  }
-  if(!text) text=new TextDecoder("utf-8").decode(buf);
-  if(text.includes("データがありません")) throw new Error(`${station.kjName} ${year}年の該当期間にJMAデータがありません。`);
-  if(text.includes("メンテナンス")) throw new Error("気象庁のデータダウンロードサービスがメンテナンス中です。");
-  if(text.includes("エラー") && !text.includes("エラー情報")) throw new Error("気象庁のデータダウンロードサービスがエラーを返しました。");
-  return parseJmaDailyCsv(text,station.kjName);
-}
-
-function normalizeJmaWindow(data,year,comparisonDates){
-  const map=new Map(data.map(d=>[d.date,d]));
-  const labels=[],min=[],avg=[],max=[],rain=[];
-  for(const baseDate of comparisonDates){
-    const dt=shiftDateToYear(baseDate,year),key=dateToYmd(dt);
-    labels.push(`${dt.getUTCMonth()+1}/${dt.getUTCDate()}`);
-    const d=map.get(key);
-    min.push(d?.min??null);avg.push(d?.avg??null);max.push(d?.max??null);rain.push(d?.rain??null);
-  }
-  return{labels,min,avg,max,rain};
 }
 function destroyFiveYearCharts(){fiveYearCharts.forEach(c=>c.destroy());fiveYearCharts=[];}
 function createFiveYearChart(title,unit,labels,series,windowSize,beginAtZero=false){
-  const wrap=document.createElement("div");wrap.className="five-year-chart-wrapper";
+  const wrap=document.createElement("div");
+  wrap.className="five-year-chart-wrapper";
   wrap.innerHTML=`<div class="five-year-chart-title">${title}</div><div class="five-year-chart-inner"><canvas></canvas></div>`;
   document.getElementById("five-year-charts").appendChild(wrap);
   const op=[1,.78,.58,.40,.24];
@@ -1304,70 +1158,61 @@ function createFiveYearChart(title,unit,labels,series,windowSize,beginAtZero=fal
   const chart=new Chart(wrap.querySelector("canvas"),{type:"line",data:{labels,datasets},options:{responsive:true,maintainAspectRatio:false,interaction:{mode:"index",intersect:false},plugins:{legend:{position:"top"},tooltip:{callbacks:{label:ctx=>`${ctx.dataset.label}: ${ctx.raw==null?"--":Number(ctx.raw).toFixed(1)} ${unit}`}}},scales:{x:{ticks:{maxTicksLimit:16},title:{display:true,text:"月日"}},y:{beginAtZero,title:{display:true,text:unit}}}}});
   fiveYearCharts.push(chart);
 }
-
 async function showFiveYearAverages(){
   if(!lat||!lon){alert("現在地が取得できていません。");return;}
   const container=document.getElementById("five-year-charts"),info=document.getElementById("jma-station-info");
   destroyFiveYearCharts();
-  container.innerHTML='<div class="jma-loading">気象庁「過去の気象データ・ダウンロード」から過去5年・14日間のデータを取得しています…<br>近いアメダス地点から順番に最大5地点まで試します。</div>';
+  container.innerHTML='<div class="jma-loading">📥 GitHub Actionsで取得済みの気象庁データを読み込んでいます…</div>';
   document.querySelector(".chart-wrapper").style.display="none";
   document.getElementById("daily-summary").style.display="none";
   document.querySelector(".day-buttons").parentElement.style.display="none";
   document.getElementById("back-to-5year").style.display="block";
   info.style.display="none";
-
   try{
-    const candidates=await findNearestJMAStations(Number(lat),Number(lon),5);
-    if(!candidates.length) throw new Error("利用可能なアメダス地点が見つかりませんでした。");
+    const db=await loadJmaHistory();
+    const stations=(db.stations||[]).map(s=>({...s,distanceKm:haversineKm(Number(lat),Number(lon),s.lat,s.lon)})).sort((a,b)=>a.distanceKm-b.distanceKm);
+    if(!stations.length)throw new Error("JMA地点一覧がJSONにありません。");
+    const station=stations[0];
     const comparisonDates=getComparisonDates();
     const baseYear=Number(getJSTDateString().slice(0,4));
     const years=[0,1,2,3,4].map(n=>baseYear-n);
-    const failures=[];
-    const today=getJSTDateString();
-    const yesterday=addJSTDays(today,-1);
-
-    for(let i=0;i<candidates.length;i++){
-      const station=candidates[i];
-      try{
-        const raw=[];
-        for(const year of years){
-          const dates=comparisonDates.map(d=>shiftDateToYear(d,year));
-          const start=dateToYmd(dates[0]);
-          let end=dateToYmd(dates[dates.length-1]);
-          /* JMAの日別値は原則「昨日まで」。現在年の本日だけは null のまま残す。 */
-          if(year===baseYear && end>yesterday) end=yesterday;
-          const data=end>=start?await fetchJmaDailyYear(station,year,start,end):[];
-          raw.push({year,data});
-          await new Promise(r=>setTimeout(r,700));
+    const rawByYear={};
+    for(const key of Object.keys(db.data||{})){
+      const batches=db.data[key]||{};
+      for(const text of Object.values(batches)){
+        const parsed=parseJmaBatch(text,[station.name]);
+        for(const d of parsed){
+          const y=Number(d.date.slice(0,4));
+          if(!rawByYear[y])rawByYear[y]=[];
+          rawByYear[y].push(d);
         }
-
-        const normalized=raw.map(r=>({year:r.year,...normalizeJmaWindow(r.data,r.year,comparisonDates)}));
-        const labels=normalized[0].labels;
-        const hasAny=normalized.some(d=>d.avg.some(v=>Number.isFinite(v))||d.min.some(v=>Number.isFinite(v))||d.max.some(v=>Number.isFinite(v))||d.rain.some(v=>Number.isFinite(v)));
-        if(!hasAny) throw new Error("指定期間の有効な日別データがありませんでした。");
-
-        info.innerHTML=`📍 <b>気象庁アメダス：${station.kjName}</b>　現在地から約${station.distanceKm.toFixed(1)} km<br>観測所座標：${station.latDecimal.toFixed(4)}, ${station.lonDecimal.toFixed(4)}<div class="jma-note">${i+1}番目の候補地点で取得成功。表示期間：本日を含む過去14日間（${labels[0]} ～ ${labels[labels.length-1]}）。気温3グラフは7日移動平均、雨量は14日移動平均。気象庁の日別確定値は昨日までのため、現在年の本日分は「--」で表示します。※ 気象庁の日別データにはOpen-Meteoの「短波放射(W/m²)」に相当する観測値がないため、短波放射グラフは表示しません。取得元：気象庁「過去の気象データ・ダウンロード」。</div>`;
-        info.style.display="block";container.innerHTML="";
-        createFiveYearChart("最低気温（7日移動平均）","°C",labels,normalized.map(d=>({year:d.year,values:d.min})),7);
-        createFiveYearChart("平均気温（7日移動平均）","°C",labels,normalized.map(d=>({year:d.year,values:d.avg})),7);
-        createFiveYearChart("最高気温（7日移動平均）","°C",labels,normalized.map(d=>({year:d.year,values:d.max})),7);
-        createFiveYearChart("降水量（14日移動平均）","mm/日",labels,normalized.map(d=>({year:d.year,values:d.rain})),14,true);
-        return;
-      }catch(err){
-        console.error(`JMA station ${station.kjName} failed`,err);
-        failures.push({station,error:err?.message||String(err)});
       }
     }
-    const list=failures.map((f,i)=>`${i+1}. ${f.station.kjName}（現在地から約${f.station.distanceKm.toFixed(1)} km）<br><span style="font-size:.75rem;color:#777;">${f.error}</span>`).join("<br>");
-    container.innerHTML=`<div class="jma-loading"><b>気象庁データの取得に失敗しました。</b><br><br>現在地から近い順に5地点を試しましたが、すべて取得できませんでした。<div style="text-align:left;margin-top:12px;line-height:1.7;">${list}</div></div>`;
+    const series=years.map(year=>{
+      const map=new Map((rawByYear[year]||[]).map(d=>[d.date.slice(5),d]));
+      const min=[],avg=[],max=[],rain=[];
+      for(const base of comparisonDates){
+        const dt=shiftDateToYear(base,year),md=`${String(dt.getUTCMonth()+1).padStart(2,"0")}-${String(dt.getUTCDate()).padStart(2,"0")}`;
+        const d=map.get(md);
+        min.push(d?.min??null);avg.push(d?.temp??null);max.push(d?.max??null);rain.push(d?.rain??null);
+      }
+      return {year,values:{min,avg,max,rain}};
+    });
+    const labels=comparisonDates.map(d=>`${d.getUTCMonth()+1}/${d.getUTCDate()}`);
+    const hasAvg=series.some(s=>s.values.avg.some(Number.isFinite));
+    if(!hasAvg)throw new Error("JMA JSONに対象地点のデータがまだ入っていません。GitHub Actionsを一度実行してください。");
+    info.innerHTML=`📍 <b>気象庁アメダス：${station.name}</b>　現在地から約${station.distanceKm.toFixed(1)} km<br>観測所座標：${Number(station.lat).toFixed(4)}, ${Number(station.lon).toFixed(4)}<div class="jma-note">表示期間：本日を含む過去14日間。気温3グラフは7日移動平均、雨量は14日移動平均。データはGitHub Actionsが気象庁から取得し、リポジトリ内のJSONをGitHub Pagesから読み込みます。</div>`;
+    info.style.display="block";container.innerHTML="";
+    createFiveYearChart("最低気温（7日移動平均）","°C",labels,series.map(s=>({year:s.year,values:s.values.min})),7);
+    createFiveYearChart("平均気温（7日移動平均）","°C",labels,series.map(s=>({year:s.year,values:s.values.avg})),7);
+    createFiveYearChart("最高気温（7日移動平均）","°C",labels,series.map(s=>({year:s.year,values:s.values.max})),7);
+    createFiveYearChart("降水量（14日移動平均）","mm/日",labels,series.map(s=>({year:s.year,values:s.values.rain})),14,true);
   }catch(err){
     console.error(err);
-    container.innerHTML=`<div class="jma-loading"><b>気象庁データの取得に失敗しました。</b><br>${err.message||err}</div>`;
+    container.innerHTML=`<div class="jma-loading"><b>気象庁データの読み込みに失敗しました。</b><br>${err.message||err}<br><br>GitHub Actionsの「Update JMA history data」を実行してください。</div>`;
   }
 }
-function backToNormalView(){
-  destroyFiveYearCharts();document.getElementById("five-year-charts").innerHTML="";document.getElementById("jma-station-info").style.display="none";document.getElementById("back-to-5year").style.display="none";document.querySelector(".chart-wrapper").style.display="block";document.getElementById("daily-summary").style.display="block";document.querySelector(".day-buttons").parentElement.style.display="block";loadChart();
-}
+function backToNormalView(){destroyFiveYearCharts();document.getElementById("five-year-charts").innerHTML="";document.getElementById("jma-station-info").style.display="none";document.getElementById("back-to-5year").style.display="none";document.querySelector(".chart-wrapper").style.display="block";document.getElementById("daily-summary").style.display="block";document.querySelector(".day-buttons").parentElement.style.display="block";loadChart();}
 
 function renderChart(data, rangeValue, titleText) {
 

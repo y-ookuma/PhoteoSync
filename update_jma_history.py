@@ -97,10 +97,15 @@ def payload(station_ids: list[str], start_year: int, start_month: int, start_day
         "optionNumList": "[]",
         "rmkFlag": "1",
         "disconnectFlag": "1",
-        "kijiFlag": "0",
-        "huukouFlag": "0",
         "youbiFlag": "0",
         "fukenFlag": "0",
+        "kijiFlag": "0",
+        "huukouFlag": "0",
+        "downloadFlag": "true",
+        "csvFlag": "1",
+        "jikantaiFlag": "0",
+        "jikantaiList": "[]",
+        "ymdLiteral": "1",
     }
 
 
@@ -201,9 +206,21 @@ def fetch_segment(session: requests.Session, stations: list[dict[str, Any]], yea
                 top = session.get(OBSDL_INDEX_URL, timeout=REQUEST_TIMEOUT)
                 top.raise_for_status()
                 time.sleep(REQUEST_PAUSE_SECONDS)
+                print(
+                    f"  request batch {pos + 1}-{pos + len(batch)} / {len(stations)} "
+                    f"(5-or-fewer stations)",
+                    flush=True,
+                )
                 r = session.post(OBSDL_TABLE_URL, data=data,
                                  headers={"Referer": OBSDL_INDEX_URL}, timeout=REQUEST_TIMEOUT)
-                r.raise_for_status()
+                if r.status_code >= 400:
+                    body = r.content.decode("utf-8-sig", errors="replace")
+                    if not body.strip():
+                        body = r.content.decode("cp932", errors="replace")
+                    body = re.sub(r"\\s+", " ", body).strip()
+                    raise RuntimeError(
+                        f"HTTP {r.status_code}; batch={ids}; response={body[:2000]!r}"
+                    )
                 if len(r.content) < 100:
                     raise RuntimeError("JMA returned an unexpectedly small response")
                 parsed = parse_batch(r.content, batch)

@@ -27,7 +27,7 @@ OUTPUT = Path("data/svgjma-history.json")
 
 # Keep requests moderate because JMA explicitly asks users not to make excessive
 # automated requests.
-BATCH_SIZE = 100
+BATCH_SIZE = 5
 REQUEST_PAUSE_SECONDS = 2.0
 REQUEST_TIMEOUT = 120
 ELEMENTS = [["201", ""], ["202", ""], ["203", ""], ["101", ""]]
@@ -171,7 +171,7 @@ def _iso_date(row: list[str]) -> str | None:
         return None
     first = normal(row[0])
     m = re.fullmatch(r"(20\d{2})/(\d{1,2})/(\d{1,2})", first) or re.fullmatch(
-        r"(20\\d{2})-(\\d{1,2})-(\\d{1,2})", first
+        r"(20\d{2})-(\d{1,2})-(\d{1,2})", first
     )
     if m:
         return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
@@ -366,6 +366,15 @@ def fetch_segment(session: requests.Session, stations: list[dict[str, Any]], yea
                 r.raise_for_status()
                 if len(r.content) < 100:
                     raise RuntimeError("JMA returned an unexpectedly small response")
+                content_type = (r.headers.get("Content-Type") or "").lower()
+                head = r.content[:512].lower()
+                if "text/html" in content_type or b"<!doctype html" in head or b"<html" in head:
+                    body = r.content.decode("utf-8-sig", errors="replace")
+                    body = re.sub(r"\s+", " ", body).strip()
+                    raise RuntimeError(
+                        "JMA returned an HTML page instead of CSV; "
+                        f"batch={ids}; response={body[:1200]!r}"
+                    )
                 parsed = parse_batch(r.content, batch)
                 for sid, rows in parsed.items():
                     merged.setdefault(sid, {}).update(rows)

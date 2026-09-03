@@ -22,7 +22,7 @@ import requests
 
 JMA_AMEDAS_URL = "https://www.jma.go.jp/bosai/amedas/const/amedastable.json"
 OBSDL_INDEX_URL = "https://www.data.jma.go.jp/risk/obsdl/index.php"
-OBSDL_TABLE_URL = "https://www.data.jma.go.jp/risk/obsdl/show/table"
+OBSDL_TABLE_URL = "https://www.data.jma.go.jp/risk/obsdl/show/table.html"
 OUTPUT = Path("data/svgjma-history.json")
 
 # Keep requests moderate because JMA explicitly asks users not to make excessive
@@ -83,6 +83,45 @@ def get_stations(session: requests.Session) -> list[dict[str, Any]]:
     return stations
 
 
+def get_obsdl_session_id(session: requests.Session) -> str:
+    """Open the JMA download page and obtain its current hidden session id.
+
+    The JMA download endpoint currently expects the PHPSESSID value generated
+    by the download page to be sent as a form field. A plain POST without this
+    value is answered with the normal HTML download page instead of CSV.
+    """
+    r = session.get(
+        OBSDL_INDEX_URL,
+        headers={
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        },
+        timeout=REQUEST_TIMEOUT,
+    )
+    r.raise_for_status()
+
+    text = r.text
+    # Current page contains: <input ... id="sid" ... value="...">
+    m = re.search(
+        r'<input\b[^>]*\bid=["\']sid["\'][^>]*\bvalue=["\']([^"\']+)["\']',
+        text,
+        flags=re.I,
+    )
+    if not m:
+        # Attribute order is not guaranteed, so also support value before id.
+        m = re.search(
+            r'<input\b[^>]*\bvalue=["\']([^"\']+)["\'][^>]*\bid=["\']sid["\']',
+            text,
+            flags=re.I,
+        )
+    if not m:
+        raise RuntimeError("Could not obtain JMA obsdl PHPSESSID/session id from index.php")
+
+    sid = m.group(1).strip()
+    if not sid:
+        raise RuntimeError("JMA obsdl returned an empty PHPSESSID/session id")
+    return sid
+
+
 def payload(station_ids: list[str], start_year: int, start_month: int, start_day: int,
             end_year: int, end_month: int, end_day: int) -> dict[str, str]:
     # interAnnualType=2: same month/day range for each year in the selected span.
@@ -90,6 +129,7 @@ def payload(station_ids: list[str], start_year: int, start_month: int, start_day
            str(start_day), str(end_day)]
     return {
         "stationNumList": json.dumps(station_ids, ensure_ascii=False, separators=(",", ":")),
+        "PHPSESSID": "",  # filled immediately before POST
         "aggrgPeriod": "1",
         "elementNumList": json.dumps(ELEMENTS, separators=(",", ":")),
         "interAnnualType": "2",
@@ -358,11 +398,24 @@ def fetch_segment(session: requests.Session, stations: list[dict[str, Any]], yea
         data = payload(ids, min(years), start_month, start_day, max(years), end_month, end_day)
         for attempt in range(3):
             try:
-                top = session.get(OBSDL_INDEX_URL, timeout=REQUEST_TIMEOUT)
-                top.raise_for_status()
+                # The current JMA download service requires the hidden sid from
+                # index.php as a form field. Refresh it for every batch so a
+                # stale/expired session cannot poison the whole workflow.
+                sid = get_obsdl_session_id(session)
+                data["PHPSESSID"] = sid
                 time.sleep(REQUEST_PAUSE_SECONDS)
-                r = session.post(OBSDL_TABLE_URL, data=data,
-                                 headers={"Referer": OBSDL_INDEX_URL}, timeout=REQUEST_TIMEOUT)
+
+                r = session.post(
+                    OBSDL_TABLE_URL,
+                    data=data,
+                    headers={
+                        "Referer": OBSDL_INDEX_URL,
+                        "Origin": "https://www.data.jma.go.jp",
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Accept": "text/x-comma-separated-values,text/csv,*/*;q=0.8",
+                    },
+                    timeout=REQUEST_TIMEOUT,
+                )
                 r.raise_for_status()
                 if len(r.content) < 100:
                     raise RuntimeError("JMA returned an unexpectedly small response")
@@ -441,7 +494,7 @@ def main() -> None:
 
     session = requests.Session()
     session.headers.update({
-        "User-Agent": "PhoteoSync/1.0 (GitHub Actions; JMA historical data updater)",
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36",
         "Accept-Language": "ja,en;q=0.8",
     })
     stations = get_stations(session)

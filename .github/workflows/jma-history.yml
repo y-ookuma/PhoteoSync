@@ -2,7 +2,6 @@ name: Update JMA history data
 
 on:
   schedule:
-    # 03:30 JST every day (18:30 UTC). Avoid the top of the hour.
     - cron: '30 18 * * *'
   workflow_dispatch:
 
@@ -16,6 +15,8 @@ concurrency:
 jobs:
   update-jma:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -26,10 +27,41 @@ jobs:
           python-version: '3.x'
 
       - name: Install dependencies
-        run: python -m pip install --upgrade requests
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install requests beautifulsoup4 pyreadr pandas
 
       - name: Fetch JMA historical data
         run: python update_jma_history.py
+
+      - name: Validate JSON
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          p = Path("data/svgjma-history.json")
+          obj = json.loads(p.read_text(encoding="utf-8"))
+
+          assert obj.get("schemaVersion") == 1
+          assert obj.get("windowDays") == 14
+          assert len(obj.get("years", [])) == 5
+          assert len(obj.get("stations", [])) > 0
+
+          numeric = 0
+          for st in obj["stations"]:
+              for year in obj["years"]:
+                  for key in ("avg", "min", "max", "rain"):
+                      numeric += sum(
+                          isinstance(v, (int, float)) and not isinstance(v, bool)
+                          for v in st["years"][str(year)][key]
+                      )
+
+          if numeric == 0:
+              raise SystemExit("Validation failed: JSON contains no numeric JMA values")
+
+          print(f"JSON validation OK: {len(obj['stations'])} stations, {numeric} numeric values")
+          PY
 
       - name: Commit JMA JSON
         run: |
@@ -42,4 +74,3 @@ jobs:
             git commit -m 'Update JMA historical weather data'
             git push
           fi
-

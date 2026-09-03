@@ -27,7 +27,7 @@ OUTPUT = Path("data/svgjma-history.json")
 
 # Keep requests moderate because JMA explicitly asks users not to make excessive
 # automated requests.
-BATCH_SIZE = 5
+BATCH_SIZE = 100
 REQUEST_PAUSE_SECONDS = 2.0
 REQUEST_TIMEOUT = 120
 ELEMENTS = [["201", ""], ["202", ""], ["203", ""], ["101", ""]]
@@ -97,10 +97,10 @@ def payload(station_ids: list[str], start_year: int, start_month: int, start_day
         "optionNumList": "[]",
         "rmkFlag": "1",
         "disconnectFlag": "1",
-        "youbiFlag": "0",
-        "fukenFlag": "0",
         "kijiFlag": "0",
         "huukouFlag": "0",
+        "youbiFlag": "0",
+        "fukenFlag": "0",
         "downloadFlag": "true",
         "csvFlag": "1",
         "jikantaiFlag": "0",
@@ -110,10 +110,25 @@ def payload(station_ids: list[str], start_year: int, start_month: int, start_day
 
 
 def csv_rows(raw: bytes) -> list[list[str]]:
-    text = raw.decode("utf-8-sig", errors="replace")
-    # JMA CSV is sometimes Shift-JIS depending on service output.
-    if "年月日" not in text and "年" not in text[:2000]:
-        text = raw.decode("cp932", errors="replace")
+    """Decode the JMA CSV and return rows.
+
+    JMA currently documents the CSV as:
+      1) download timestamp
+      2) blank line
+      3-5) multi-row headers
+      6-) data rows
+    The response is normally Shift-JIS/CP932, but UTF-8 is also accepted.
+    """
+    candidates = [
+        raw.decode("utf-8-sig", errors="replace"),
+        raw.decode("cp932", errors="replace"),
+        raw.decode("shift_jis", errors="replace"),
+    ]
+    # Prefer the decoding that actually contains Japanese JMA header text.
+    text = next(
+        (t for t in candidates if "集計開始" in t or "地点名" in t or "日平均気温" in t),
+        candidates[0],
+    )
     return list(csv.reader(io.StringIO(text)))
 
 
@@ -122,77 +137,217 @@ def normal(s: str) -> str:
 
 
 def value(s: str) -> float | None:
+    """Convert a JMA numeric cell to float; preserve missing values as None."""
     s = normal(s).replace("＊", "").replace("*", "")
-    if not s or s in {"///", "--", "×", "..."}:
+    if not s or s in {"///", "--", "×", "...", "", "欠測"}:
         return None
+    # JMA may append display marks such as ) or ] when non-numeric mode is used.
+    s = s.strip("()[]")
     try:
         return float(s)
     except ValueError:
         return None
 
 
+def _find_data_start(rows: list[list[str]]) -> int:
+    """Find the first actual data row, tolerating JMA's documented header layout."""
+    for i, row in enumerate(rows):
+        if not row:
+            continue
+        first = normal(row[0])
+        if re.fullmatch(r"20\d{2}/\d{1,2}/\d{1,2}", first):
+            return i
+        if re.fullmatch(r"20\d{2}-\d{1,2}-\d{1,2}", first):
+            return i
+        # ymdLiteral=0 fallback: YYYY,MM,DD,...
+        if len(row) >= 3 and re.fullmatch(r"20\d{2}", first):
+            if re.fullmatch(r"\d{1,2}", normal(row[1])) and re.fullmatch(r"\d{1,2}", normal(row[2])):
+                return i
+    return -1
+
+
+def _iso_date(row: list[str]) -> str | None:
+    if not row:
+        return None
+    first = normal(row[0])
+    m = re.fullmatch(r"(20\d{2})/(\d{1,2})/(\d{1,2})", first) or re.fullmatch(
+        r"(20\\d{2})-(\\d{1,2})-(\\d{1,2})", first
+    )
+    if m:
+        return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+    if len(row) >= 3 and re.fullmatch(r"20\d{2}", normal(row[0])):
+        try:
+            return f"{int(row[0]):04d}-{int(row[1]):02d}-{int(row[2]):02d}"
+        except ValueError:
+            return None
+    return None
+
+
+def _station_aliases(name: str) -> set[str]:
+    """Return normalized forms useful for matching JMA station header text."""
+    n = normal(name)
+    aliases = {n}
+    # JMA may append prefecture/region information in some CSV headers.
+    for sep in ("（", "(", "[", "［"):
+        if sep in n:
+            aliases.add(n.split(sep, 1)[0])
+    return {x for x in aliases if x}
+
+
 def parse_batch(raw: bytes, stations: list[dict[str, Any]]) -> dict[str, dict[str, dict[str, float | None]]]:
-    """Return station-id -> ISO date -> values."""
+    """Parse JMA's documented multi-row CSV into station-id/date/value records.
+
+    Important: JMA's CSV is *not* a simple one-row header. Station names occupy
+    row 3, item names occupy row 4, and optional quality columns are described
+    by row 5. The previous parser treated all header rows as one string and
+    therefore could silently miss every station. This parser identifies each
+    station's block first, then selects the value column for each requested item.
+    """
     rows = csv_rows(raw)
     if not rows:
-        return {}
+        raise RuntimeError("JMA returned an empty CSV")
 
-    data_start = -1
-    for i, row in enumerate(rows):
-        if row and re.match(r"^20\d{2}[/-]\d{1,2}[/-]\d{1,2}", row[0].strip()):
-            data_start = i
-            break
+    data_start = _find_data_start(rows)
     if data_start < 0:
-        # Some outputs have year/month/day in separate columns.
-        for i, row in enumerate(rows):
-            if len(row) >= 3 and re.match(r"^20\d{2}$", row[0].strip()) and row[1].strip().isdigit():
-                data_start = i
-                break
-    if data_start < 0:
-        return {}
+        preview = "\\n".join(",".join(r[:12]) for r in rows[:8])
+        raise RuntimeError(f"Could not locate JMA data rows. Header preview:\\n{preview}")
 
-    headers = rows[:data_start]
-    max_cols = max(len(r) for r in rows)
-    col_text = [normal(" ".join((r[c] if c < len(r) else "") for r in headers)) for c in range(max_cols)]
+    # The documented format puts station names on the third header row and
+    # item names on the fourth header row. Be defensive if an extra header row
+    # (for example prefecture names) is inserted.
+    station_header_idx = None
+    item_header_idx = None
+    for i in range(min(data_start, 8)):
+        joined = "".join(normal(x) for x in rows[i])
+        if station_header_idx is None and ("地点名" in joined or any(
+            normal(st["name"]) and normal(st["name"]) in joined for st in stations
+        )):
+            station_header_idx = i
+        if item_header_idx is None and ("平均気温" in joined or "最高気温" in joined or "最低気温" in joined):
+            item_header_idx = i
 
-    out: dict[str, dict[str, dict[str, float | None]]] = {}
+    if station_header_idx is None:
+        station_header_idx = 2 if data_start > 2 else max(0, data_start - 2)
+    if item_header_idx is None:
+        item_header_idx = 3 if data_start > 3 else max(0, data_start - 1)
+
+    station_row = rows[station_header_idx]
+    item_row = rows[item_header_idx]
+    max_cols = max(len(station_row), len(item_row), *(len(r) for r in rows[:data_start]))
+
+    # Fill forward station names because JMA/HTML-to-CSV variants sometimes
+    # leave continuation cells blank even though the official example repeats
+    # them. A station block is therefore a contiguous run of columns.
+    station_by_col: list[str] = [""] * max_cols
+    current = ""
+    for c in range(max_cols):
+        raw_name = normal(station_row[c]) if c < len(station_row) else ""
+        if raw_name:
+            current = raw_name
+        station_by_col[c] = current
+
+    # Some responses include the six date columns first. Only columns belonging
+    # to requested stations are considered below.
+    requested: dict[str, dict[str, Any]] = {}
     for st in stations:
-        name = normal(st["name"])
-        cols = {"avg": -1, "min": -1, "max": -1, "rain": -1}
-        for c, h in enumerate(col_text):
-            if name not in h:
-                continue
-            if cols["avg"] < 0 and re.search(r"平均気温|日平均気温", h): cols["avg"] = c
-            if cols["min"] < 0 and re.search(r"最低気温|日最低気温", h): cols["min"] = c
-            if cols["max"] < 0 and re.search(r"最高気温|日最高気温", h): cols["max"] = c
-            if cols["rain"] < 0 and re.search(r"降水量", h): cols["rain"] = c
-        if any(v < 0 for v in cols.values()):
+        for alias in _station_aliases(st["name"]):
+            requested[alias] = st
+
+    columns: dict[str, dict[str, int]] = {}
+    for c in range(max_cols):
+        st_name = station_by_col[c]
+        if not st_name:
+            continue
+        st = None
+        for alias, candidate in requested.items():
+            if alias == st_name or alias in st_name or st_name in alias:
+                st = candidate
+                break
+        if st is None:
             continue
 
-        sid = st["id"]
-        out.setdefault(sid, {})
-        for row in rows[data_start:]:
-            if not row:
-                continue
-            first = row[0].strip()
-            m = re.match(r"^(20\d{2})[/-](\d{1,2})[/-](\d{1,2})$", first)
-            if m:
-                iso = f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
-            elif len(row) >= 3 and re.match(r"^20\d{2}$", row[0].strip()):
-                try:
-                    iso = f"{int(row[0]):04d}-{int(row[1]):02d}-{int(row[2]):02d}"
-                except ValueError:
-                    continue
-            else:
-                continue
-            out[sid][iso] = {
-                "avg": value(row[cols["avg"]] if cols["avg"] < len(row) else ""),
-                "min": value(row[cols["min"]] if cols["min"] < len(row) else ""),
-                "max": value(row[cols["max"]] if cols["max"] < len(row) else ""),
-                "rain": value(row[cols["rain"]] if cols["rain"] < len(row) else ""),
-            }
-    return out
+        item = normal(item_row[c]) if c < len(item_row) else ""
+        kind = None
+        if re.search(r"日平均気温|平均気温", item):
+            kind = "avg"
+        elif re.search(r"日最高気温|最高気温", item):
+            kind = "max"
+        elif re.search(r"日最低気温|最低気温", item):
+            kind = "min"
+        elif re.search(r"降水量", item):
+            kind = "rain"
+        if kind and kind not in columns.setdefault(st["id"], {}):
+            columns[st["id"]][kind] = c
 
+    # Positional fallback: when station names are omitted/reformatted in the
+    # header, the station blocks still occur in the same order as the request.
+    # Build blocks from the item row by locating the first occurrence of each
+    # requested item group, then map them in station order.
+    if len(columns) < len(stations):
+        # Detect runs of columns that contain at least one requested item.
+        item_cols: list[tuple[int, str]] = []
+        for c in range(max_cols):
+            item = normal(item_row[c]) if c < len(item_row) else ""
+            kind = None
+            if re.search(r"日平均気温|平均気温", item): kind = "avg"
+            elif re.search(r"日最高気温|最高気温", item): kind = "max"
+            elif re.search(r"日最低気温|最低気温", item): kind = "min"
+            elif re.search(r"降水量", item): kind = "rain"
+            if kind:
+                item_cols.append((c, kind))
+
+        # Group consecutive/near-consecutive item columns into station blocks.
+        blocks: list[list[tuple[int, str]]] = []
+        for col_kind in item_cols:
+            if not blocks or col_kind[0] - blocks[-1][-1][0] > 4:
+                blocks.append([col_kind])
+            else:
+                blocks[-1].append(col_kind)
+        if len(blocks) >= len(stations):
+            for st, block in zip(stations, blocks):
+                d = columns.setdefault(st["id"], {})
+                for c, kind in block:
+                    d.setdefault(kind, c)
+
+    missing = [st["name"] for st in stations if set(columns.get(st["id"], {})) != {"avg", "min", "max", "rain"}]
+    if missing:
+        preview = "\\n".join(
+            f"{i}: station={station_by_col[i]!r}, item={normal(item_row[i]) if i < len(item_row) else ''!r}"
+            for i in range(min(max_cols, 80))
+            if station_by_col[i] or (i < len(item_row) and normal(item_row[i]))
+        )
+        raise RuntimeError(
+            f"Could not map all JMA elements. Missing stations: {missing[:10]}"\
+            f". Header columns:\\n{preview[:6000]}"
+        )
+
+    out: dict[str, dict[str, dict[str, float | None]]] = {}
+    for row in rows[data_start:]:
+        iso = _iso_date(row)
+        if not iso:
+            continue
+        for st in stations:
+            cols = columns[st["id"]]
+            out.setdefault(st["id"], {})[iso] = {
+                key: value(row[col] if col < len(row) else "")
+                for key, col in cols.items()
+            }
+
+    if not out:
+        raise RuntimeError("JMA CSV contained no parseable data rows")
+
+    # Do not allow a successful HTTP response to silently turn into an all-null
+    # dataset. At least one numeric value is required from every parsed batch.
+    numeric_count = sum(
+        1 for by_date in out.values()
+        for vals in by_date.values()
+        for v in vals.values()
+        if v is not None
+    )
+    if numeric_count == 0:
+        raise RuntimeError("JMA CSV parsed, but every weather value was null")
+
+    return out
 
 def fetch_segment(session: requests.Session, stations: list[dict[str, Any]], years: list[int],
                   start_month: int, start_day: int, end_month: int, end_day: int) -> dict[str, dict[str, dict[str, float | None]]]:
@@ -206,27 +361,25 @@ def fetch_segment(session: requests.Session, stations: list[dict[str, Any]], yea
                 top = session.get(OBSDL_INDEX_URL, timeout=REQUEST_TIMEOUT)
                 top.raise_for_status()
                 time.sleep(REQUEST_PAUSE_SECONDS)
-                print(
-                    f"  request batch {pos + 1}-{pos + len(batch)} / {len(stations)} "
-                    f"(5-or-fewer stations)",
-                    flush=True,
-                )
                 r = session.post(OBSDL_TABLE_URL, data=data,
                                  headers={"Referer": OBSDL_INDEX_URL}, timeout=REQUEST_TIMEOUT)
-                if r.status_code >= 400:
-                    body = r.content.decode("utf-8-sig", errors="replace")
-                    if not body.strip():
-                        body = r.content.decode("cp932", errors="replace")
-                    body = re.sub(r"\\s+", " ", body).strip()
-                    raise RuntimeError(
-                        f"HTTP {r.status_code}; batch={ids}; response={body[:2000]!r}"
-                    )
+                r.raise_for_status()
                 if len(r.content) < 100:
                     raise RuntimeError("JMA returned an unexpectedly small response")
                 parsed = parse_batch(r.content, batch)
                 for sid, rows in parsed.items():
                     merged.setdefault(sid, {}).update(rows)
-                print(f"  batch {pos + 1}-{pos + len(batch)} / {len(stations)}: {len(parsed)} stations", flush=True)
+                numeric_count = sum(
+                    1 for by_date in parsed.values()
+                    for vals in by_date.values()
+                    for v in vals.values()
+                    if v is not None
+                )
+                print(
+                    f"  batch {pos + 1}-{pos + len(batch)} / {len(stations)}: "
+                    f"{len(parsed)} stations, {numeric_count} numeric values",
+                    flush=True,
+                )
                 break
             except Exception as exc:
                 if attempt == 2:
@@ -272,8 +425,6 @@ def build_output(stations: list[dict[str, Any]], today: date, raw: dict[str, dic
 
 
 def main() -> None:
-    print("=== PhoteoSync JMA production update ===", flush=True)
-    print("Processing all eligible AMeDAS stations in batches of 5.", flush=True)
     today = jst_today()
     dates = comparison_dates(today)
     years = [today.year - i for i in range(5)]
@@ -304,6 +455,16 @@ def main() -> None:
         got = fetch_segment(session, stations, years, *seg)
         for sid, rows in got.items():
             raw.setdefault(sid, {}).update(rows)
+
+    numeric_count = sum(
+        1 for by_date in raw.values()
+        for vals in by_date.values()
+        for v in vals.values()
+        if v is not None
+    )
+    if numeric_count == 0:
+        raise RuntimeError("No numeric JMA weather values were collected; refusing to write an all-null JSON")
+    print(f"Collected {len(raw)} stations / {numeric_count} numeric values", flush=True)
 
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     result = build_output(stations, today, raw)

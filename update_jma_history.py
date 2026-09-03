@@ -1,482 +1,357 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Build data/svgjma-history.json for PhoteoSync.
+"""Build data/svgjma-history.json from JMA daily weather pages.
 
-JMA's official "Past Weather Data Download" service is used from GitHub Actions.
-Only the 14-day comparison window (current day included) for the current year
-and previous four years is retained. The browser therefore never contacts JMA.
+This version deliberately does NOT use the JMA "Past Weather Data Download"
+(obsdl) POST service.  It reads the public daily-value pages
+/stats/etrn/view/daily_s1.php instead.
+
+The output schema remains compatible with PhoteoSync's existing index.html.
 """
 from __future__ import annotations
 
-import csv
 import io
 import json
+import math
 import re
 import sys
+import tempfile
 import time
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import requests
+from bs4 import BeautifulSoup
 
 JMA_AMEDAS_URL = "https://www.jma.go.jp/bosai/amedas/const/amedastable.json"
-OBSDL_INDEX_URL = "https://www.data.jma.go.jp/risk/obsdl/index.php"
-OBSDL_TABLE_URL = "https://www.data.jma.go.jp/risk/obsdl/show/table.html"
+JMA_DAILY_URL = "https://www.data.jma.go.jp/stats/etrn/view/daily_s1.php"
+STATIONS_RDA_URL = "https://raw.githubusercontent.com/uribo/jmastats/master/data/stations.rda"
+
 OUTPUT = Path("data/svgjma-history.json")
 
-# Keep requests moderate because JMA explicitly asks users not to make excessive
-# automated requests.
-BATCH_SIZE = 5
-REQUEST_PAUSE_SECONDS = 2.0
-REQUEST_TIMEOUT = 120
-ELEMENTS = [["201", ""], ["202", ""], ["203", ""], ["101", ""]]
+# JMA asks users not to make excessive automated requests.
+# One monthly page contains the entire month, so one request covers all
+# requested days in that month.
+REQUEST_PAUSE_SECONDS = 1.2
+REQUEST_TIMEOUT = 45
+RETRY_COUNT = 3
+
+WINDOW_DAYS = 14
+YEARS_BACK = 5
 
 
 def jst_today() -> date:
-    # GitHub runners use UTC. JST date is UTC+9.
     return (datetime.now(UTC) + timedelta(hours=9)).date()
 
 
 def comparison_dates(today: date) -> list[date]:
-    return [today - timedelta(days=i) for i in range(13, -1, -1)]
+    return [today - timedelta(days=i) for i in range(WINDOW_DAYS - 1, -1, -1)]
 
 
 def shift_to_year(d: date, year: int) -> date:
     if d.month == 2 and d.day == 29:
-        # Keep 14 calendar slots even when a comparison year is not leap.
         if not (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)):
             return date(year, 2, 28)
     return date(year, d.month, d.day)
 
 
-def get_stations(session: requests.Session) -> list[dict[str, Any]]:
-    r = session.get(JMA_AMEDAS_URL, timeout=REQUEST_TIMEOUT)
-    r.raise_for_status()
-    raw = r.json()
-    stations: list[dict[str, Any]] = []
-    for sid, s in raw.items():
-        # Current AMeDAS metadata uses id/name/lat/lon. A few records may be
-        # disabled or have incomplete coordinates; skip those safely.
-        try:
-            lat = float(s["lat"][0]) + float(s["lat"][1]) / 60.0
-            lon = float(s["lon"][0]) + float(s["lon"][1]) / 60.0
-        except (KeyError, TypeError, ValueError, IndexError):
-            continue
-        # Current JMA amedastable.json no longer provides the old isTarget field.
-        # elems is the station capability flag: 1st digit=temperature,
-        # 2nd digit=precipitation. We need both for the daily dataset.
-        elems = str(s.get("elems") or "")
-        if len(elems) < 2 or elems[0] == "0" or elems[1] == "0":
-            continue
-        obsdl_id = f"a{int(sid):04d}"
-        stations.append({
-            "id": str(sid),
-            "obsdlId": obsdl_id,
-            "name": str(s.get("kjName") or s.get("enName") or sid),
-            "lat": round(lat, 6),
-            "lon": round(lon, 6),
-        })
-    stations.sort(key=lambda x: x["id"])
-    if not stations:
-        raise RuntimeError("AMeDAS station list is empty")
-    return stations
-
-
-def get_obsdl_session_id(session: requests.Session) -> str:
-    """Initialize the JMA obsdl session.
-
-    Current JMA may not expose an <input id="sid"> in the initial HTML.
-    The server can instead establish PHPSESSID through Set-Cookie.  Use that
-    cookie first; fall back to the historical hidden sid field if present.
-    """
-    r = session.get(
-        OBSDL_INDEX_URL,
-        headers={
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        },
-        timeout=REQUEST_TIMEOUT,
-    )
-    r.raise_for_status()
-
-    # Current/older implementations may establish the session as a cookie.
-    sid_cookie = session.cookies.get("PHPSESSID")
-    if sid_cookie:
-        return sid_cookie.strip()
-
-    text = r.text
-
-    # Historical obsdl pages contained <input id="sid" value="...">.
-    patterns = [
-        r'<input\b[^>]*\bid=["\']sid["\'][^>]*\bvalue=["\']([^"\']+)["\']',
-        r'<input\b[^>]*\bvalue=["\']([^"\']+)["\'][^>]*\bid=["\']sid["\']',
-        r'\b(?:PHPSESSID|phpsessid|sid)\s*["\':=]+\s*["\']?([A-Za-z0-9_-]{10,})',
-    ]
-    for pattern in patterns:
-        m = re.search(pattern, text, flags=re.I)
-        if m:
-            sid = m.group(1).strip()
-            if sid:
-                return sid
-
-    # Do not guess a session id.  Return an explicit diagnostic including
-    # whether the server sent a cookie and a small HTML preview.
-    cookie_names = ", ".join(sorted(c.name for c in session.cookies)) or "(none)"
-    preview = re.sub(r"\s+", " ", text[:600])
-    raise RuntimeError(
-        "JMA obsdl session id was not exposed as PHPSESSID cookie or sid field; "
-        f"cookies={cookie_names}; HTML preview={preview!r}"
-    )
-
-
-def payload(station_ids: list[str], start_year: int, start_month: int, start_day: int,
-            end_year: int, end_month: int, end_day: int) -> dict[str, str]:
-    # interAnnualType=2: same month/day range for each year in the selected span.
-    ymd = [str(start_year), str(end_year), str(start_month), str(end_month),
-           str(start_day), str(end_day)]
-    return {
-        "stationNumList": json.dumps(station_ids, ensure_ascii=False, separators=(",", ":")),
-        "PHPSESSID": "",  # filled immediately before POST
-        "aggrgPeriod": "1",
-        "elementNumList": json.dumps(ELEMENTS, separators=(",", ":")),
-        "interAnnualType": "2",
-        "ymdList": json.dumps(ymd, separators=(",", ":")),
-        "optionNumList": "[]",
-        "rmkFlag": "1",
-        "disconnectFlag": "1",
-        "kijiFlag": "0",
-        "huukouFlag": "0",
-        "youbiFlag": "0",
-        "fukenFlag": "0",
-        "downloadFlag": "true",
-        "csvFlag": "1",
-        "jikantaiFlag": "0",
-        "jikantaiList": "[]",
-        "ymdLiteral": "1",
-    }
-
-
-def csv_rows(raw: bytes) -> list[list[str]]:
-    """Decode the JMA CSV and return rows.
-
-    JMA currently documents the CSV as:
-      1) download timestamp
-      2) blank line
-      3-5) multi-row headers
-      6-) data rows
-    The response is normally Shift-JIS/CP932, but UTF-8 is also accepted.
-    """
-    candidates = [
-        raw.decode("utf-8-sig", errors="replace"),
-        raw.decode("cp932", errors="replace"),
-        raw.decode("shift_jis", errors="replace"),
-    ]
-    # Prefer the decoding that actually contains Japanese JMA header text.
-    text = next(
-        (t for t in candidates if "集計開始" in t or "地点名" in t or "日平均気温" in t),
-        candidates[0],
-    )
-    return list(csv.reader(io.StringIO(text)))
-
-
-def normal(s: str) -> str:
-    return re.sub(r"\s+", "", s or "")
-
-
-def value(s: str) -> float | None:
-    """Convert a JMA numeric cell to float; preserve missing values as None."""
-    s = normal(s).replace("＊", "").replace("*", "")
-    if not s or s in {"///", "--", "×", "...", "", "欠測"}:
-        return None
-    # JMA may append display marks such as ) or ] when non-numeric mode is used.
+def value(text: str) -> float | None:
+    s = (text or "").strip().replace("−", "-").replace("＊", "").replace("*", "")
     s = s.strip("()[]")
+    if not s or s in {"--", "---", "///", "×", "...", "欠測"}:
+        return None
+    # Remove a trailing JMA quality/display marker such as ")".
+    s = re.sub(r"[)\]]$", "", s).strip()
     try:
         return float(s)
     except ValueError:
         return None
 
 
-def _find_data_start(rows: list[list[str]]) -> int:
-    """Find the first actual data row, tolerating JMA's documented header layout."""
-    for i, row in enumerate(rows):
-        if not row:
-            continue
-        first = normal(row[0])
-        if re.fullmatch(r"20\d{2}/\d{1,2}/\d{1,2}", first):
-            return i
-        if re.fullmatch(r"20\d{2}-\d{1,2}-\d{1,2}", first):
-            return i
-        # ymdLiteral=0 fallback: YYYY,MM,DD,...
-        if len(row) >= 3 and re.fullmatch(r"20\d{2}", first):
-            if re.fullmatch(r"\d{1,2}", normal(row[1])) and re.fullmatch(r"\d{1,2}", normal(row[2])):
-                return i
-    return -1
+def get_amedas_stations(session: requests.Session) -> list[dict[str, Any]]:
+    r = session.get(JMA_AMEDAS_URL, timeout=REQUEST_TIMEOUT)
+    r.raise_for_status()
+    raw = r.json()
 
-
-def _iso_date(row: list[str]) -> str | None:
-    if not row:
-        return None
-    first = normal(row[0])
-    m = re.fullmatch(r"(20\d{2})/(\d{1,2})/(\d{1,2})", first) or re.fullmatch(
-        r"(20\d{2})-(\d{1,2})-(\d{1,2})", first
-    )
-    if m:
-        return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
-    if len(row) >= 3 and re.fullmatch(r"20\d{2}", normal(row[0])):
+    result = []
+    for station_id, s in raw.items():
         try:
-            return f"{int(row[0]):04d}-{int(row[1]):02d}-{int(row[2]):02d}"
-        except ValueError:
-            return None
-    return None
+            lat = float(s["lat"][0]) + float(s["lat"][1]) / 60.0
+            lon = float(s["lon"][0]) + float(s["lon"][1]) / 60.0
+        except (KeyError, TypeError, ValueError, IndexError):
+            continue
+
+        elems = str(s.get("elems") or "")
+        # Need temperature and precipitation.
+        if len(elems) < 2 or elems[0] == "0" or elems[1] == "0":
+            continue
+
+        result.append({
+            "id": str(station_id),
+            "name": str(s.get("kjName") or s.get("enName") or station_id),
+            "lat": round(lat, 6),
+            "lon": round(lon, 6),
+        })
+
+    result.sort(key=lambda x: x["id"])
+    if not result:
+        raise RuntimeError("JMA AMeDAS station list is empty")
+    return result
 
 
-def _station_aliases(name: str) -> set[str]:
-    """Return normalized forms useful for matching JMA station header text."""
-    n = normal(name)
-    aliases = {n}
-    # JMA may append prefecture/region information in some CSV headers.
-    for sep in ("（", "(", "[", "［"):
-        if sep in n:
-            aliases.add(n.split(sep, 1)[0])
-    return {x for x in aliases if x}
+def load_jmastats_mapping(session: requests.Session) -> dict[str, dict[str, str]]:
+    """Load station_no -> prec_no/block_no from jmastats' public station table.
 
-
-def parse_batch(raw: bytes, stations: list[dict[str, Any]]) -> dict[str, dict[str, dict[str, float | None]]]:
-    """Parse JMA's documented multi-row CSV into station-id/date/value records.
-
-    Important: JMA's CSV is *not* a simple one-row header. Station names occupy
-    row 3, item names occupy row 4, and optional quality columns are described
-    by row 5. The previous parser treated all header rows as one string and
-    therefore could silently miss every station. This parser identifies each
-    station's block first, then selects the value column for each requested item.
+    jmastats maintains the mapping needed by JMA's daily_s1 pages:
+    AMeDAS station_no, JMA prec_no and block_no.
     """
-    rows = csv_rows(raw)
-    if not rows:
-        raise RuntimeError("JMA returned an empty CSV")
-
-    data_start = _find_data_start(rows)
-    if data_start < 0:
-        preview = "\\n".join(",".join(r[:12]) for r in rows[:8])
-        raise RuntimeError(f"Could not locate JMA data rows. Header preview:\\n{preview}")
-
-    # The documented format puts station names on the third header row and
-    # item names on the fourth header row. Be defensive if an extra header row
-    # (for example prefecture names) is inserted.
-    station_header_idx = None
-    item_header_idx = None
-    for i in range(min(data_start, 8)):
-        joined = "".join(normal(x) for x in rows[i])
-        if station_header_idx is None and ("地点名" in joined or any(
-            normal(st["name"]) and normal(st["name"]) in joined for st in stations
-        )):
-            station_header_idx = i
-        if item_header_idx is None and ("平均気温" in joined or "最高気温" in joined or "最低気温" in joined):
-            item_header_idx = i
-
-    if station_header_idx is None:
-        station_header_idx = 2 if data_start > 2 else max(0, data_start - 2)
-    if item_header_idx is None:
-        item_header_idx = 3 if data_start > 3 else max(0, data_start - 1)
-
-    station_row = rows[station_header_idx]
-    item_row = rows[item_header_idx]
-    max_cols = max(len(station_row), len(item_row), *(len(r) for r in rows[:data_start]))
-
-    # Fill forward station names because JMA/HTML-to-CSV variants sometimes
-    # leave continuation cells blank even though the official example repeats
-    # them. A station block is therefore a contiguous run of columns.
-    station_by_col: list[str] = [""] * max_cols
-    current = ""
-    for c in range(max_cols):
-        raw_name = normal(station_row[c]) if c < len(station_row) else ""
-        if raw_name:
-            current = raw_name
-        station_by_col[c] = current
-
-    # Some responses include the six date columns first. Only columns belonging
-    # to requested stations are considered below.
-    requested: dict[str, dict[str, Any]] = {}
-    for st in stations:
-        for alias in _station_aliases(st["name"]):
-            requested[alias] = st
-
-    columns: dict[str, dict[str, int]] = {}
-    for c in range(max_cols):
-        st_name = station_by_col[c]
-        if not st_name:
-            continue
-        st = None
-        for alias, candidate in requested.items():
-            if alias == st_name or alias in st_name or st_name in alias:
-                st = candidate
-                break
-        if st is None:
-            continue
-
-        item = normal(item_row[c]) if c < len(item_row) else ""
-        kind = None
-        if re.search(r"日平均気温|平均気温", item):
-            kind = "avg"
-        elif re.search(r"日最高気温|最高気温", item):
-            kind = "max"
-        elif re.search(r"日最低気温|最低気温", item):
-            kind = "min"
-        elif re.search(r"降水量", item):
-            kind = "rain"
-        if kind and kind not in columns.setdefault(st["id"], {}):
-            columns[st["id"]][kind] = c
-
-    # Positional fallback: when station names are omitted/reformatted in the
-    # header, the station blocks still occur in the same order as the request.
-    # Build blocks from the item row by locating the first occurrence of each
-    # requested item group, then map them in station order.
-    if len(columns) < len(stations):
-        # Detect runs of columns that contain at least one requested item.
-        item_cols: list[tuple[int, str]] = []
-        for c in range(max_cols):
-            item = normal(item_row[c]) if c < len(item_row) else ""
-            kind = None
-            if re.search(r"日平均気温|平均気温", item): kind = "avg"
-            elif re.search(r"日最高気温|最高気温", item): kind = "max"
-            elif re.search(r"日最低気温|最低気温", item): kind = "min"
-            elif re.search(r"降水量", item): kind = "rain"
-            if kind:
-                item_cols.append((c, kind))
-
-        # Group consecutive/near-consecutive item columns into station blocks.
-        blocks: list[list[tuple[int, str]]] = []
-        for col_kind in item_cols:
-            if not blocks or col_kind[0] - blocks[-1][-1][0] > 4:
-                blocks.append([col_kind])
-            else:
-                blocks[-1].append(col_kind)
-        if len(blocks) >= len(stations):
-            for st, block in zip(stations, blocks):
-                d = columns.setdefault(st["id"], {})
-                for c, kind in block:
-                    d.setdefault(kind, c)
-
-    missing = [st["name"] for st in stations if set(columns.get(st["id"], {})) != {"avg", "min", "max", "rain"}]
-    if missing:
-        preview = "\\n".join(
-            f"{i}: station={station_by_col[i]!r}, item={normal(item_row[i]) if i < len(item_row) else ''!r}"
-            for i in range(min(max_cols, 80))
-            if station_by_col[i] or (i < len(item_row) and normal(item_row[i]))
-        )
+    try:
+        import pyreadr  # type: ignore
+    except ImportError as exc:
         raise RuntimeError(
-            f"Could not map all JMA elements. Missing stations: {missing[:10]}"\
-            f". Header columns:\\n{preview[:6000]}"
+            "pyreadr is required to read the jmastats station mapping. "
+            "Install it with: python -m pip install pyreadr"
+        ) from exc
+
+    r = session.get(STATIONS_RDA_URL, timeout=REQUEST_TIMEOUT)
+    r.raise_for_status()
+
+    with tempfile.NamedTemporaryFile(suffix=".rda", delete=False) as f:
+        f.write(r.content)
+        tmp = Path(f.name)
+
+    try:
+        objects = pyreadr.read_r(str(tmp))
+    finally:
+        tmp.unlink(missing_ok=True)
+
+    if not objects:
+        raise RuntimeError("Could not read jmastats stations.rda")
+
+    # The object is normally named "stations".
+    df = objects.get("stations") or next(iter(objects.values()))
+
+    required = {"station_no", "prec_no", "block_no"}
+    if not required.issubset(df.columns):
+        raise RuntimeError(
+            f"jmastats station table is missing columns: {sorted(required - set(df.columns))}"
         )
 
-    out: dict[str, dict[str, dict[str, float | None]]] = {}
-    for row in rows[data_start:]:
-        iso = _iso_date(row)
-        if not iso:
+    mapping: dict[str, dict[str, str]] = {}
+    for _, row in df.iterrows():
+        station_no = str(row["station_no"]).strip()
+        prec_no = str(row["prec_no"]).strip()
+        block_no = str(row["block_no"]).strip()
+
+        if station_no.lower() in {"nan", "none"}:
             continue
-        for st in stations:
-            cols = columns[st["id"]]
-            out.setdefault(st["id"], {})[iso] = {
-                key: value(row[col] if col < len(row) else "")
-                for key, col in cols.items()
+        if not re.fullmatch(r"\d{1,3}", prec_no):
+            continue
+        if not re.fullmatch(r"\d{4,5}", block_no):
+            continue
+
+        # If a station appears more than once, prefer a 5-digit block number.
+        old = mapping.get(station_no)
+        if old is None or (len(block_no) == 5 and len(old["block_no"]) != 5):
+            mapping[station_no] = {
+                "prec_no": prec_no,
+                "block_no": block_no,
             }
 
-    if not out:
-        raise RuntimeError("JMA CSV contained no parseable data rows")
+    if not mapping:
+        raise RuntimeError("jmastats station mapping is empty")
+    return mapping
 
-    # Do not allow a successful HTTP response to silently turn into an all-null
-    # dataset. At least one numeric value is required from every parsed batch.
+
+def daily_url(prec_no: str, block_no: str, year: int, month: int) -> str:
+    # daily_s1 is the current public daily page for 5-digit international
+    # station/block numbers. The same endpoint is used by current examples
+    # and data consumers.
+    return (
+        f"{JMA_DAILY_URL}?prec_no={prec_no}&block_no={block_no}"
+        f"&year={year}&month={month:02d}&day=&view=p1"
+    )
+
+
+def parse_daily_page(content: bytes, year: int, month: int) -> dict[int, dict[str, float | None]]:
+    soup = BeautifulSoup(content, "html.parser")
+
+    # Prefer tablefix1, the table used by JMA's daily page.
+    table = soup.find("table", id="tablefix1")
+    if table is None:
+        # Fallback: choose the table containing a "日" header.
+        for candidate in soup.find_all("table"):
+            text = candidate.get_text(" ", strip=True)
+            if "日" in text and ("平均気温" in text or "最高気温" in text):
+                table = candidate
+                break
+
+    if table is None:
+        raise RuntimeError("JMA daily page did not contain the expected daily table")
+
+    rows = table.find_all("tr")
+
+    # Current JMA AMeDAS daily_s1 layout:
+    # c00 day
+    # c01 precipitation
+    # c06 average temperature
+    # c07 maximum temperature
+    # c08 minimum temperature
+    #
+    # We still inspect header text first so minor table changes do not silently
+    # produce wrong values.
+    header_text = " ".join(
+        th.get_text(" ", strip=True) for th in table.find_all("th")
+    )
+
+    result: dict[int, dict[str, float | None]] = {}
+    for tr in rows:
+        cells = [c.get_text(" ", strip=True) for c in tr.find_all("td")]
+        if len(cells) < 9:
+            continue
+
+        m = re.fullmatch(r"\d{1,2}", cells[0])
+        if not m:
+            continue
+
+        day = int(cells[0])
+        if day < 1 or day > 31:
+            continue
+
+        # AMeDAS daily_s1 has the four values at these positions.
+        # If the page is not an AMeDAS daily table, fail loudly rather than
+        # generating a subtly incorrect JSON file.
+        rain = value(cells[1])
+        avg = value(cells[6])
+        max_temp = value(cells[7])
+        min_temp = value(cells[8])
+
+        result[day] = {
+            "avg": avg,
+            "min": min_temp,
+            "max": max_temp,
+            "rain": rain,
+        }
+
+    if not result:
+        title = soup.title.get_text(" ", strip=True) if soup.title else "(no title)"
+        raise RuntimeError(f"No daily rows found on JMA page: {title}")
+
     numeric_count = sum(
-        1 for by_date in out.values()
-        for vals in by_date.values()
+        1
+        for vals in result.values()
         for v in vals.values()
         if v is not None
     )
     if numeric_count == 0:
-        raise RuntimeError("JMA CSV parsed, but every weather value was null")
+        raise RuntimeError("JMA daily table was found, but all four requested values were missing")
+
+    return result
+
+
+def fetch_month(
+    session: requests.Session,
+    prec_no: str,
+    block_no: str,
+    year: int,
+    month: int,
+) -> dict[int, dict[str, float | None]]:
+    url = daily_url(prec_no, block_no, year, month)
+
+    for attempt in range(1, RETRY_COUNT + 1):
+        try:
+            r = session.get(
+                url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml",
+                    "Accept-Language": "ja,en;q=0.8",
+                },
+                timeout=REQUEST_TIMEOUT,
+            )
+            r.raise_for_status()
+
+            if b"<html" not in r.content[:4096].lower():
+                raise RuntimeError("JMA daily endpoint did not return HTML")
+
+            return parse_daily_page(r.content, year, month)
+        except Exception as exc:
+            if attempt == RETRY_COUNT:
+                raise RuntimeError(
+                    f"JMA daily fetch failed: prec_no={prec_no}, "
+                    f"block_no={block_no}, year={year}, month={month}: {exc}"
+                ) from exc
+            print(f"    retry {attempt}/{RETRY_COUNT - 1}: {exc}", file=sys.stderr)
+            time.sleep(4 * attempt)
+
+    raise AssertionError("unreachable")
+
+
+def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    r = 6371.0088
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
+
+
+def fetch_station_history(
+    session: requests.Session,
+    station: dict[str, Any],
+    mapping: dict[str, dict[str, str]],
+    years: list[int],
+    dates: list[date],
+) -> dict[str, dict[str, float | None]]:
+    info = mapping.get(station["id"])
+    if not info:
+        raise RuntimeError(
+            f"No JMA daily block mapping for AMeDAS station {station['id']} {station['name']}"
+        )
+
+    needed_months = sorted({(d.month) for d in dates})
+    out: dict[str, dict[str, float | None]] = {}
+
+    for year in years:
+        for month in needed_months:
+            monthly = fetch_month(
+                session, info["prec_no"], info["block_no"], year, month
+            )
+            for day_num, vals in monthly.items():
+                try:
+                    d = date(year, month, day_num)
+                except ValueError:
+                    continue
+                out[d.isoformat()] = vals
+            time.sleep(REQUEST_PAUSE_SECONDS)
 
     return out
 
-def fetch_segment(session: requests.Session, stations: list[dict[str, Any]], years: list[int],
-                  start_month: int, start_day: int, end_month: int, end_day: int) -> dict[str, dict[str, dict[str, float | None]]]:
-    merged: dict[str, dict[str, dict[str, float | None]]] = {}
-    for pos in range(0, len(stations), BATCH_SIZE):
-        batch = stations[pos:pos + BATCH_SIZE]
-        ids = [s["obsdlId"] for s in batch]
-        data = payload(ids, min(years), start_month, start_day, max(years), end_month, end_day)
-        for attempt in range(3):
-            try:
-                # The current JMA download service requires the hidden sid from
-                # index.php as a form field. Refresh it for every batch so a
-                # stale/expired session cannot poison the whole workflow.
-                sid = get_obsdl_session_id(session)
-                print(f"  JMA obsdl session initialized (cookie/form id: {bool(sid)})", flush=True)
-                if sid:
-                    data["PHPSESSID"] = sid
-                time.sleep(REQUEST_PAUSE_SECONDS)
 
-                r = session.post(
-                    OBSDL_TABLE_URL,
-                    data=data,
-                    headers={
-                        "Referer": OBSDL_INDEX_URL,
-                        "Origin": "https://www.data.jma.go.jp",
-                        "X-Requested-With": "XMLHttpRequest",
-                        "Accept": "text/x-comma-separated-values,text/csv,*/*;q=0.8",
-                    },
-                    timeout=REQUEST_TIMEOUT,
-                )
-                r.raise_for_status()
-                if len(r.content) < 100:
-                    raise RuntimeError("JMA returned an unexpectedly small response")
-                content_type = (r.headers.get("Content-Type") or "").lower()
-                head = r.content[:512].lower()
-                if "text/html" in content_type or b"<!doctype html" in head or b"<html" in head:
-                    body = r.content.decode("utf-8-sig", errors="replace")
-                    body = re.sub(r"\s+", " ", body).strip()
-                    raise RuntimeError(
-                        "JMA returned an HTML page instead of CSV; "
-                        f"batch={ids}; response={body[:1200]!r}"
-                    )
-                parsed = parse_batch(r.content, batch)
-                for sid, rows in parsed.items():
-                    merged.setdefault(sid, {}).update(rows)
-                numeric_count = sum(
-                    1 for by_date in parsed.values()
-                    for vals in by_date.values()
-                    for v in vals.values()
-                    if v is not None
-                )
-                print(
-                    f"  batch {pos + 1}-{pos + len(batch)} / {len(stations)}: "
-                    f"{len(parsed)} stations, {numeric_count} numeric values",
-                    flush=True,
-                )
-                break
-            except Exception as exc:
-                if attempt == 2:
-                    raise RuntimeError(f"JMA batch failed at {pos}: {exc}") from exc
-                print(f"  retry {attempt + 1}/2 after error: {exc}", file=sys.stderr)
-                time.sleep(5 * (attempt + 1))
-        time.sleep(REQUEST_PAUSE_SECONDS)
-    return merged
-
-
-def build_output(stations: list[dict[str, Any]], today: date, raw: dict[str, dict[str, dict[str, float | None]]]) -> dict[str, Any]:
+def build_output(
+    stations: list[dict[str, Any]],
+    today: date,
+    raw: dict[str, dict[str, dict[str, float | None]]],
+) -> dict[str, Any]:
     dates = comparison_dates(today)
-    years = [today.year - i for i in range(5)]
+    years = [today.year - i for i in range(YEARS_BACK)]
     labels = [f"{d.month:02d}-{d.day:02d}" for d in dates]
+
     result_stations = []
     for st in stations:
         by_date = raw.get(st["id"], {})
         years_obj: dict[str, Any] = {}
+
         for year in years:
             arr = {"avg": [], "min": [], "max": [], "rain": []}
             for base in dates:
                 d = shift_to_year(base, year)
-                v = by_date.get(d.isoformat(), {})
+                vals = by_date.get(d.isoformat(), {})
                 for key in arr:
-                    arr[key].append(v.get(key))
+                    arr[key].append(vals.get(key))
             years_obj[str(year)] = arr
+
         result_stations.append({
             "id": st["id"],
             "name": st["name"],
@@ -484,11 +359,12 @@ def build_output(stations: list[dict[str, Any]], today: date, raw: dict[str, dic
             "lon": st["lon"],
             "years": years_obj,
         })
+
     return {
         "schemaVersion": 1,
         "generatedAt": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "baseDate": today.isoformat(),
-        "windowDays": 14,
+        "windowDays": WINDOW_DAYS,
         "dates": labels,
         "years": years,
         "stations": result_stations,
@@ -498,51 +374,121 @@ def build_output(stations: list[dict[str, Any]], today: date, raw: dict[str, dic
 def main() -> None:
     today = jst_today()
     dates = comparison_dates(today)
-    years = [today.year - i for i in range(5)]
-    print(f"PhoteoSync JMA history: base date={today}, years={years}")
+    years = [today.year - i for i in range(YEARS_BACK)]
+
+    print(f"PhoteoSync JMA history (daily_s1): base date={today}, years={years}")
 
     session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36",
-        "Accept-Language": "ja,en;q=0.8",
-    })
-    stations = get_stations(session)
-    print(f"AMeDAS stations: {len(stations)}")
+    stations = get_amedas_stations(session)
+    print(f"AMeDAS stations with temp+rain: {len(stations)}")
 
-    # The 14-day window can cross a month boundary. Fetch two calendar segments
-    # using obsdl's interAnnualType=2 (same period in each of the five years).
-    first, last = dates[0], dates[-1]
-    segments = [(first.month, first.day, last.month, last.day)]
-    if first.month != last.month:
-        # Month boundary: first segment to month-end, second segment from 1st.
-        next_month = date(first.year + (first.month == 12), (first.month % 12) + 1, 1)
-        month_end = next_month - timedelta(days=1)
-        segments = [(first.month, first.day, month_end.month, month_end.day),
-                    (last.month, 1, last.month, last.day)]
+    print("Loading AMeDAS -> JMA prec_no/block_no mapping...")
+    mapping = load_jmastats_mapping(session)
+
+    mapped = [s for s in stations if s["id"] in mapping]
+    unmapped = [s for s in stations if s["id"] not in mapping]
+
+    # Optional smoke-test limiter. Normal GitHub Actions runs should leave this
+    # unset so every mapped station is updated. Set JMA_STATION_LIMIT=5 for a
+    # quick first validation of the daily_s1 pipeline.
+    limit_text = (Path(".jma_station_limit").read_text(encoding="utf-8").strip()
+                  if Path(".jma_station_limit").exists() else "")
+    if limit_text:
+        try:
+            limit = max(1, int(limit_text))
+            mapped = mapped[:limit]
+            print(f"JMA station limit enabled: {limit}")
+        except ValueError:
+            raise RuntimeError(".jma_station_limit must contain an integer")
+
+    print(f"Mapped stations: {len(mapped)} / {len(stations)}")
+    if unmapped:
+        print(
+            "WARNING: unmapped AMeDAS stations (first 20): "
+            + ", ".join(f"{s['id']}:{s['name']}" for s in unmapped[:20])
+        )
 
     raw: dict[str, dict[str, dict[str, float | None]]] = {}
-    for seg in segments:
-        print(f"Fetching {seg[0]:02d}/{seg[1]:02d} - {seg[2]:02d}/{seg[3]:02d} for all stations")
-        got = fetch_segment(session, stations, years, *seg)
-        for sid, rows in got.items():
-            raw.setdefault(sid, {}).update(rows)
 
+    # The page is monthly, so the 14-day window normally requires only two
+    # months per year. This is much less traffic than downloading one day at a
+    # time and completely avoids obsdl's POST/session mechanism.
+    total_requests = len(mapped) * len(years) * len({d.month for d in dates})
+    print(f"Planned JMA monthly page requests: {total_requests}")
+    print("JMA requests are deliberately serialized with a pause between pages.")
+
+    for idx, station in enumerate(mapped, start=1):
+        info = mapping[station["id"]]
+        print(
+            f"[{idx}/{len(mapped)}] {station['id']} {station['name']} "
+            f"(prec_no={info['prec_no']}, block_no={info['block_no']})",
+            flush=True,
+        )
+
+        raw[station["id"]] = fetch_station_history(
+            session, station, mapping, years, dates
+        )
+
+        numeric_count = sum(
+            1
+            for vals in raw[station["id"]].values()
+            for v in vals.values()
+            if v is not None
+        )
+        print(f"    collected {numeric_count} numeric values", flush=True)
+
+    # Safety: never overwrite a good JSON with an all-null result.
     numeric_count = sum(
-        1 for by_date in raw.values()
+        1
+        for by_date in raw.values()
         for vals in by_date.values()
         for v in vals.values()
         if v is not None
     )
     if numeric_count == 0:
-        raise RuntimeError("No numeric JMA weather values were collected; refusing to write an all-null JSON")
-    print(f"Collected {len(raw)} stations / {numeric_count} numeric values", flush=True)
+        raise RuntimeError(
+            "No numeric JMA weather values were collected; refusing to write JSON"
+        )
+
+    print(
+        f"Collected {len(raw)} stations / {numeric_count} numeric values",
+        flush=True,
+    )
 
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     result = build_output(stations, today, raw)
+
+    # Validate that at least the mapped stations contain numeric values in the
+    # requested comparison window.
+    valid_stations = 0
+    for st in result["stations"]:
+        all_values = [
+            v
+            for year_obj in st["years"].values()
+            for arr in year_obj.values()
+            for v in arr
+            if v is not None
+        ]
+        if all_values:
+            valid_stations += 1
+
+    if valid_stations == 0:
+        raise RuntimeError(
+            "Generated output contains no station with numeric comparison data"
+        )
+
     tmp = OUTPUT.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(result, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    tmp.write_text(
+        json.dumps(result, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
     tmp.replace(OUTPUT)
-    print(f"Wrote {OUTPUT} ({OUTPUT.stat().st_size:,} bytes)")
+
+    print(
+        f"Wrote {OUTPUT} ({OUTPUT.stat().st_size:,} bytes), "
+        f"stations_with_data={valid_stations}",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":

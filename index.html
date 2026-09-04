@@ -6,6 +6,7 @@
 <link rel="icon" href="icon.png">
 <title>PhoteoSync</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom"></script>
 
 <style>
   body {
@@ -199,12 +200,43 @@
     background: #f0f0f0;
     cursor: pointer;
   }
-  .five-year-chart-title { font-weight: bold; text-align: center; margin: 4px 0 8px; }
+  .five-year-chart-title { font-weight: bold; text-align: center; margin: 4px 0 8px; position: relative; }
+  .five-year-png-btn {
+    position: absolute;
+    right: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    font-weight: normal;
+    font-size: 0.75rem;
+    padding: 4px 8px;
+    border: 1px solid #888;
+    border-radius: 6px;
+    background: #f0f0f0;
+    cursor: pointer;
+  }
   .five-year-chart-wrapper { width: 100%; height: 360px; margin-bottom: 24px; overflow-x: auto; }
   .five-year-chart-inner { height: 320px; min-width: 700px; }
-  #jma-station-info { display:none; margin:4px 0 12px; padding:8px 12px; border-radius:6px; background:#f7f7f7; font-size:.85rem; line-height:1.5; }
-  .jma-note { font-size:.75rem; color:#777; margin-top:5px; }
-  .jma-loading { padding:12px; text-align:center; color:#666; }
+  #five-year-ma-controls { display:none; margin-bottom: 10px; }
+  .ma-btn-row { display:flex; gap:8px; margin-top:5px; max-width:360px; }
+  .ma-btn {
+    flex: 1;
+    min-width: 0;
+    padding: 8px;
+    font-size: 0.9rem;
+    text-align: center;
+    border: 1px solid #888;
+    border-radius: 6px;
+    background: #f0f0f0;
+    cursor: pointer;
+  }
+  .ma-btn.active {
+    background: #2196F3;
+    color: white;
+    border-color: #2196F3;
+  }
+  #five-year-info { display:none; margin:4px 0 12px; padding:8px 12px; border-radius:6px; background:#f7f7f7; font-size:.85rem; line-height:1.5; }
+  .five-year-note { font-size:.75rem; color:#777; margin-top:5px; }
+  .five-year-loading { padding:12px; text-align:center; color:#666; }
 </style>
 </head>
 <body>
@@ -234,7 +266,17 @@
 
   <button id="back-to-daily" onclick="backToRangeView()">← 期間表示に戻る</button>
   <button id="back-to-5year" onclick="backToNormalView()">← 通常表示に戻る</button>
-  <div id="jma-station-info"></div>
+  <button id="five-year-reset-zoom" class="toggle-btn" style="display:none;" onclick="resetFiveYearZoom()">🔍 表示期間をリセット</button>
+  <button id="five-year-csv-btn" class="toggle-btn" style="display:none;" onclick="exportFiveYearCSV()">⬇ 移動平均CSV</button>
+  <div id="five-year-ma-controls">
+    <label>移動平均</label>
+    <div class="ma-btn-row" id="five-year-ma-buttons">
+      <div class="ma-btn active" data-window="7">7日</div>
+      <div class="ma-btn" data-window="14">14日</div>
+      <div class="ma-btn" data-window="30">30日</div>
+    </div>
+  </div>
+  <div id="five-year-info"></div>
   <div id="five-year-charts"></div>
 
   <div class="chart-wrapper">
@@ -311,7 +353,8 @@
   <div style="display:flex; gap:8px; flex-wrap:wrap;">
     <button id="csv-export-hourly-btn" class="toggle-btn" onclick="exportHourlyCSV()">⬇ 1時間ごとCSV</button>
     <button id="csv-export-daily-btn" class="toggle-btn" onclick="exportDailyCSV()">⬇ 日計CSV</button>
-    <button id="five-year-btn" class="toggle-btn" onclick="showFiveYearAverages()">📈 過去5年(気象庁)</button>
+    <button id="chart-png-btn" class="toggle-btn" onclick="exportMainChartPNG()">⬇ グラフPNG</button>
+    <button id="five-year-btn" class="toggle-btn" onclick="showFiveYearAverages()">📈 過去5年分</button>
   </div>
 
   <!-- ▼ ライセンス表記 -->
@@ -319,7 +362,7 @@
     This project is licensed under the MIT License.<br>
     Copyright (c) 2026 <a href="https://github.com/y-ookuma/PhoteoSync/blob/main/README.md" target="_blank" rel="noopener noreferrer">y-ookuma</a><br>
     <br>
-    This project uses weather data provided by Open‑Meteo and the Japan Meteorological Agency (JMA).<br>
+    This project uses weather data provided by Open‑Meteo.<br>
     Weather data by <a href="https://open-meteo.com/" target="_blank" rel="noopener noreferrer">Open‑Meteo.com</a>,
     licensed under <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener noreferrer">CC BY 4.0</a>.
   </footer>
@@ -1022,6 +1065,28 @@ function exportDailyCSV() {
   downloadCSV(rows, "photeosync_daily", startDate, endDate);
 }
 
+/* ▼ 現在表示中のメイングラフ（気温・短波放射・降雨量など）をPNG画像としてダウンロード */
+function exportMainChartPNG() {
+  if (!window.chartInstance) {
+    alert("ダウンロードできるグラフがありません。");
+    return;
+  }
+
+  const times = currentData && currentData.hourly ? currentData.hourly.time : [];
+  const startDate = times[0] ? times[0].slice(0, 10) : "data";
+  const endDate = times[times.length - 1] ? times[times.length - 1].slice(0, 10) : startDate;
+
+  const url = window.chartInstance.toBase64Image("image/png", 1);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = endDate !== startDate
+    ? `photeosync_chart_${startDate}_${endDate}.png`
+    : `photeosync_chart_${startDate}.png`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
 /* ▼ 日別集計テーブルの日付をタップした際に、その日1日分のグラフ・時間別テーブルを表示 */
 function showDayDetail(dateStr) {
 
@@ -1051,10 +1116,23 @@ function backToRangeView() {
 
 /* ▼ グラフ描画本体（期間表示・日別詳細表示の両方から呼び出す共通処理） */
 
-/* ▼ 気象庁アメダス：GitHub Actionsで生成した全国データから過去5年表示 */
-const JMA_LOCAL_JSON_URL = "data/svgjma-history.json";
+/* ▼ Open-Meteoアーカイブ：過去5年分の気象データを取得し、年ごとに重ねて比較表示 */
+const OPEN_METEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive";
 let fiveYearCharts = [];
-let jmaHistoryCache = null;
+let fiveYearLabels = null;   // 取得済みデータのX軸ラベル（月日）
+let fiveYearSeries = null;   // 取得済みデータ本体（年ごとの生値。移動平均はまだかけていない）
+let fiveYearMaWindow = 7;    // 現在選択中の移動平均日数（7 / 14 / 30）
+let fiveYearStartDate = null;
+let fiveYearEndDate = null;
+
+/* ▼ 各グラフの定義（データキー・タイトル・単位・色など） */
+const FIVE_YEAR_CHART_DEFS = [
+  {key:"min", title:"最低気温", unit:"°C", beginAtZero:false, color:"33,150,243"},
+  {key:"mean",title:"平均気温", unit:"°C", beginAtZero:false, color:"76,175,80"},
+  {key:"max", title:"最高気温", unit:"°C", beginAtZero:false, color:"244,67,54"},
+  {key:"rain",title:"降水量",   unit:"mm/日", beginAtZero:true, color:"33,150,243"},
+  {key:"sw",  title:"短波放射量",unit:"MJ/m²/日", beginAtZero:true, color:"255,152,0"}
+];
 
 function movingAverage(values, windowSize=7){
   const h=Math.floor(windowSize/2);
@@ -1067,85 +1145,234 @@ function movingAverage(values, windowSize=7){
     return count?sum/count:null;
   });
 }
-function haversineKm(a,b,c,d){
-  const R=6371,r=Math.PI/180,dl=(c-a)*r,dn=(d-b)*r;
-  const x=Math.sin(dl/2)**2+Math.cos(a*r)*Math.cos(c*r)*Math.sin(dn/2)**2;
-  return R*2*Math.atan2(Math.sqrt(x),Math.sqrt(1-x));
-}
-async function loadJmaHistory(){
-  if(jmaHistoryCache)return jmaHistoryCache;
-  const res=await fetch(`${JMA_LOCAL_JSON_URL}?v=${Date.now()}`,{cache:"no-store"});
-  if(!res.ok)throw new Error(`svgjma-history.jsonを取得できませんでした (${res.status})`);
-  jmaHistoryCache=await res.json();
-  if(jmaHistoryCache.schemaVersion!==1)throw new Error("svgjma-history.jsonの形式が対応していません。");
-  return jmaHistoryCache;
-}
-function getComparisonDates(){
-  const todayStr=getJSTDateString().slice(0,10);
-  const end=new Date(`${todayStr}T00:00:00Z`),dates=[];
-  for(let i=13;i>=0;i--){const dt=new Date(end);dt.setUTCDate(end.getUTCDate()-i);dates.push(dt);}
+
+/* ▼ 「月日」を年に依存せず並べるための366日分テンプレート日付（うるう年基準で2/29も含む） */
+function getYearTemplateDates(){
+  const start=new Date(Date.UTC(2020,0,1)); // 2020年はうるう年
+  const dates=[];
+  for(let i=0;i<366;i++){
+    const dt=new Date(start);
+    dt.setUTCDate(start.getUTCDate()+i);
+    dates.push(dt);
+  }
   return dates;
 }
+
+/* ▼ テンプレート日付（月日）を指定した年の実日付に変換。うるう年でない年の2/29は2/28に丸める */
 function shiftDateToYear(dt,year){
   const month=dt.getUTCMonth(),day=dt.getUTCDate();
   if(month===1&&day===29&&!(year%4===0&&(year%100!==0||year%400===0)))return new Date(Date.UTC(year,1,28));
   return new Date(Date.UTC(year,month,day));
 }
+
+function toDateKey(dt){
+  return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth()+1).padStart(2,"0")}-${String(dt.getUTCDate()).padStart(2,"0")}`;
+}
+
 function destroyFiveYearCharts(){fiveYearCharts.forEach(c=>c.destroy());fiveYearCharts=[];}
-function createFiveYearChart(title,unit,labels,series,windowSize,beginAtZero=false){
+
+/* ▼ 5つのグラフ間でX軸の表示範囲（拡大・移動した期間）を同期させる */
+let syncingFiveYearZoom=false;
+function syncFiveYearZoom(sourceChart){
+  if(syncingFiveYearZoom)return;
+  syncingFiveYearZoom=true;
+  const {min,max}=sourceChart.scales.x;
+  fiveYearCharts.forEach(c=>{
+    if(c!==sourceChart)c.zoomScale("x",{min,max},"none");
+  });
+  syncingFiveYearZoom=false;
+}
+function resetFiveYearZoom(){
+  fiveYearCharts.forEach(c=>c.resetZoom());
+}
+
+/* ▼ グラフをPNG画像としてダウンロード */
+function downloadFiveYearChartPNG(chart,fileKey,windowSize){
+  const url=chart.toBase64Image("image/png",1);
+  const start=fiveYearStartDate||"start";
+  const end=fiveYearEndDate||"end";
+  const a=document.createElement("a");
+  a.href=url;
+  a.download=`photeosync_five_year_${fileKey}_${windowSize}d_${start}_${end}.png`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+function createFiveYearChart(title,unit,labels,series,windowSize,beginAtZero=false,baseColor="33,150,243",fileKey="chart"){
   const wrap=document.createElement("div");
   wrap.className="five-year-chart-wrapper";
-  wrap.innerHTML=`<div class="five-year-chart-title">${title}</div><div class="five-year-chart-inner"><canvas></canvas></div>`;
+  wrap.innerHTML=`<div class="five-year-chart-title">${title}<button type="button" class="five-year-png-btn">⬇ PNG</button></div><div class="five-year-chart-inner"><canvas></canvas></div>`;
   document.getElementById("five-year-charts").appendChild(wrap);
-  const op=[1,.78,.58,.40,.24];
-  const datasets=series.map((s,i)=>({label:`${s.year}年`,data:movingAverage(s.values,windowSize),borderColor:`rgba(33,150,243,${op[i]})`,backgroundColor:"transparent",borderWidth:i===0?3:2,pointRadius:0,tension:.15,spanGaps:true}));
-  const chart=new Chart(wrap.querySelector("canvas"),{type:"line",data:{labels,datasets},options:{responsive:true,maintainAspectRatio:false,interaction:{mode:"index",intersect:false},plugins:{legend:{position:"top"},tooltip:{callbacks:{label:ctx=>`${ctx.dataset.label}: ${ctx.raw==null?"--":Number(ctx.raw).toFixed(1)} ${unit}`}}},scales:{x:{ticks:{maxTicksLimit:16},title:{display:true,text:"月日"}},y:{beginAtZero,title:{display:true,text:unit}}}}});
+  const op=[1,.78,.58,.40,.24]; // 今年ほど濃く(1)、過去にさかのぼるほど薄く(0.24)
+  const datasets=series.map((s,i)=>({label:`${s.year}年`,data:movingAverage(s.values,windowSize),borderColor:`rgba(${baseColor},${op[i]})`,backgroundColor:"transparent",borderWidth:i===0?3:2,pointRadius:0,tension:.15,spanGaps:true}));
+  const chart=new Chart(wrap.querySelector("canvas"),{type:"line",data:{labels,datasets},options:{responsive:true,maintainAspectRatio:false,interaction:{mode:"index",intersect:false},plugins:{legend:{position:"top"},tooltip:{callbacks:{label:ctx=>`${ctx.dataset.label}: ${ctx.raw==null?"--":Number(ctx.raw).toFixed(1)} ${unit}`}},zoom:{limits:{x:{min:"original",max:"original"}},pan:{enabled:true,mode:"x",onPanComplete:({chart})=>syncFiveYearZoom(chart)},zoom:{drag:{enabled:true,backgroundColor:"rgba(33,150,243,0.15)"},wheel:{enabled:true},pinch:{enabled:true},mode:"x",onZoomComplete:({chart})=>syncFiveYearZoom(chart)}}},scales:{x:{ticks:{maxTicksLimit:16},title:{display:true,text:"月日"}},y:{beginAtZero,title:{display:true,text:unit}}}}});
   fiveYearCharts.push(chart);
+  wrap.querySelector(".five-year-png-btn").addEventListener("click",()=>downloadFiveYearChartPNG(chart,fileKey,windowSize));
 }
 async function showFiveYearAverages(){
   if(!lat||!lon){alert("現在地が取得できていません。");return;}
-  const container=document.getElementById("five-year-charts"),info=document.getElementById("jma-station-info");
+  const container=document.getElementById("five-year-charts"),info=document.getElementById("five-year-info");
   destroyFiveYearCharts();
-  container.innerHTML='<div class="jma-loading">📥 気象庁の過去データを読み込んでいます…</div>';
+  container.innerHTML='<div class="five-year-loading">📥 過去5年分の気象データを読み込んでいます…</div>';
   document.querySelector(".chart-wrapper").style.display="none";
   document.getElementById("daily-summary").style.display="none";
   document.querySelector(".day-buttons").parentElement.style.display="none";
   document.getElementById("back-to-5year").style.display="block";
   info.style.display="none";
   try{
-    const db=await loadJmaHistory();
-    const stations=(db.stations||[]).map(s=>({...s,distanceKm:haversineKm(Number(lat),Number(lon),Number(s.lat),Number(s.lon))})).sort((a,b)=>a.distanceKm-b.distanceKm);
-    if(!stations.length)throw new Error("svgjma-history.jsonにJMA地点一覧がありません。GitHub Actionsを一度実行してください。");
-    const station=stations[0];
-    const comparisonDates=getComparisonDates();
-    const baseYear=Number(getJSTDateString().slice(0,4));
-    const years=[0,1,2,3,4].map(n=>baseYear-n);
-    const labels=comparisonDates.map(d=>`${d.getUTCMonth()+1}/${d.getUTCDate()}`);
+    const endDate=getJSTDateString();
+    const [ey,em,ed]=endDate.split("-").map(Number);
+    const startDate=`${ey-5}-${String(em).padStart(2,"0")}-${String(ed).padStart(2,"0")}`;
+
+    const url=
+      `${OPEN_METEO_ARCHIVE_URL}?latitude=${lat}&longitude=${lon}` +
+      `&start_date=${startDate}&end_date=${endDate}` +
+      `&daily=temperature_2m_min,temperature_2m_mean,temperature_2m_max,precipitation_sum,shortwave_radiation_sum` +
+      `&timezone=${PHOTEOSYNC_TIMEZONE}`;
+
+    const res=await fetch(url);
+    if(!res.ok)throw new Error(`Open-Meteoアーカイブデータを取得できませんでした (${res.status})`);
+    const data=await res.json();
+    const d=data.daily;
+    if(!d||!d.time||!d.time.length)throw new Error("Open-Meteoアーカイブデータが空でした。");
+
+    /* ▼ 日付(YYYY-MM-DD)をキーにした検索用マップを作成 */
+    const byDate={};
+    for(let i=0;i<d.time.length;i++){
+      byDate[d.time[i]]={
+        min:d.temperature_2m_min[i],
+        mean:d.temperature_2m_mean[i],
+        max:d.temperature_2m_max[i],
+        rain:d.precipitation_sum[i],
+        sw:d.shortwave_radiation_sum[i]
+      };
+    }
+
+    const baseYear=ey;
+    const years=[0,1,2,3,4].map(n=>baseYear-n); // 今年→4年前の順
+    const templateDates=getYearTemplateDates();
+    const labels=templateDates.map(dt=>`${dt.getUTCMonth()+1}/${dt.getUTCDate()}`);
+
     const series=years.map(year=>{
-      const y=station.years?.[String(year)]||{};
-      const min=[],avg=[],max=[],rain=[];
-      for(let i=0;i<comparisonDates.length;i++){
-        min.push(Number.isFinite(y.min?.[i])?y.min[i]:null);
-        avg.push(Number.isFinite(y.avg?.[i])?y.avg[i]:null);
-        max.push(Number.isFinite(y.max?.[i])?y.max[i]:null);
-        rain.push(Number.isFinite(y.rain?.[i])?y.rain[i]:null);
+      const min=[],mean=[],max=[],rain=[],sw=[];
+      for(const dt of templateDates){
+        const row=byDate[toDateKey(shiftDateToYear(dt,year))];
+        min.push(row&&Number.isFinite(row.min)?row.min:null);
+        mean.push(row&&Number.isFinite(row.mean)?row.mean:null);
+        max.push(row&&Number.isFinite(row.max)?row.max:null);
+        rain.push(row&&Number.isFinite(row.rain)?row.rain:null);
+        sw.push(row&&Number.isFinite(row.sw)?row.sw:null);
       }
-      return {year,values:{min,avg,max,rain}};
+      return {year,values:{min,mean,max,rain,sw}};
     });
-    const hasAvg=series.some(s=>s.values.avg.some(Number.isFinite));
-    if(!hasAvg)throw new Error("対象地点のJMAデータがまだありません。GitHub Actionsの「Update JMA history data」を実行してください。");
-    info.innerHTML=`📍 <b>気象庁アメダス：${station.name}</b>　現在地から約${station.distanceKm.toFixed(1)} km<br>観測所座標：${Number(station.lat).toFixed(4)}, ${Number(station.lon).toFixed(4)}<div class="jma-note">表示期間：本日を含む過去14日間。気温3グラフは7日移動平均、雨量は14日移動平均。全国のJMAデータはGitHub Actionsで更新し、このJSONから最寄り観測所を選択します。</div>`;
-    info.style.display="block";container.innerHTML="";
-    createFiveYearChart("最低気温（7日移動平均）","°C",labels,series.map(s=>({year:s.year,values:s.values.min})),7);
-    createFiveYearChart("平均気温（7日移動平均）","°C",labels,series.map(s=>({year:s.year,values:s.values.avg})),7);
-    createFiveYearChart("最高気温（7日移動平均）","°C",labels,series.map(s=>({year:s.year,values:s.values.max})),7);
-    createFiveYearChart("降水量（14日移動平均）","mm/日",labels,series.map(s=>({year:s.year,values:s.values.rain})),14,true);
+
+    const hasData=series.some(s=>s.values.mean.some(Number.isFinite));
+    if(!hasData)throw new Error("対象地点のデータが取得できませんでした。");
+
+    fiveYearLabels=labels;
+    fiveYearSeries=series;
+    fiveYearStartDate=startDate;
+    fiveYearEndDate=endDate;
+
+    container.innerHTML="";
+    document.getElementById("five-year-reset-zoom").style.display="inline-flex";
+    document.getElementById("five-year-csv-btn").style.display="inline-flex";
+    document.getElementById("five-year-ma-controls").style.display="block";
+    renderFiveYearCharts(fiveYearMaWindow);
   }catch(err){
     console.error(err);
-    container.innerHTML=`<div class="jma-loading"><b>気象庁データの読み込みに失敗しました。</b><br>${err.message||err}<br><br>GitHub Actionsの「Update JMA history data」を実行してください。</div>`;
+    container.innerHTML=`<div class="five-year-loading"><b>気象データの読み込みに失敗しました。</b><br>${err.message||err}</div>`;
   }
 }
-function backToNormalView(){destroyFiveYearCharts();document.getElementById("five-year-charts").innerHTML="";document.getElementById("jma-station-info").style.display="none";document.getElementById("back-to-5year").style.display="none";document.querySelector(".chart-wrapper").style.display="block";document.getElementById("daily-summary").style.display="block";document.querySelector(".day-buttons").parentElement.style.display="block";loadChart();}
+
+/* ▼ 取得済みデータを使って、指定した移動平均日数で5つのグラフを再描画する（データの再取得はしない） */
+function renderFiveYearCharts(windowSize){
+  if(!fiveYearLabels||!fiveYearSeries)return;
+  fiveYearMaWindow=windowSize;
+  destroyFiveYearCharts();
+  const container=document.getElementById("five-year-charts");
+  container.innerHTML="";
+  FIVE_YEAR_CHART_DEFS.forEach(def=>{
+    createFiveYearChart(
+      `${def.title}（${windowSize}日移動平均）`,
+      def.unit,
+      fiveYearLabels,
+      fiveYearSeries.map(s=>({year:s.year,values:s.values[def.key]})),
+      windowSize,
+      def.beginAtZero,
+      def.color,
+      def.key
+    );
+  });
+
+  const info=document.getElementById("five-year-info");
+  info.innerHTML=`📍 現在地の気象データ（緯度 ${Number(lat).toFixed(4)}, 経度 ${Number(lon).toFixed(4)}）<div class="five-year-note">表示期間：過去5年分（本日まで）。全グラフとも${windowSize}日移動平均。データ提供：Open-Meteo。線の色は今年に近いほど濃く、過去にさかのぼるほど薄く表示しています。<br>グラフはドラッグで範囲選択拡大／ホイールやピンチで拡大縮小／拡大後はドラッグで期間移動ができます（5つのグラフで期間は連動します）。</div>`;
+  info.style.display="block";
+
+  document.querySelectorAll("#five-year-ma-buttons .ma-btn").forEach(btn=>{
+    btn.classList.toggle("active",Number(btn.dataset.window)===windowSize);
+  });
+}
+
+/* ▼ 移動平均ボタン（7日／14日／30日）のクリック処理 */
+document.querySelectorAll("#five-year-ma-buttons .ma-btn").forEach(btn=>{
+  btn.addEventListener("click",()=>{
+    const windowSize=Number(btn.dataset.window);
+    if(windowSize===fiveYearMaWindow)return;
+    if(!fiveYearLabels||!fiveYearSeries)return; // データ未取得時は何もしない
+    renderFiveYearCharts(windowSize);
+  });
+});
+
+/* ▼ 現在選択中の移動平均日数で計算した5年比較データをCSVとしてダウンロード */
+function exportFiveYearCSV(){
+  if(!fiveYearLabels||!fiveYearSeries){
+    alert("先に「過去5年分」を表示してください。");
+    return;
+  }
+  const years=fiveYearSeries.map(s=>s.year);
+
+  /* ▼ 各グラフ・各年の移動平均データを先にまとめて計算 */
+  const maData=FIVE_YEAR_CHART_DEFS.map(def=>
+    fiveYearSeries.map(s=>movingAverage(s.values[def.key],fiveYearMaWindow))
+  );
+
+  /* ▼ ヘッダー：まず全項目・全年の「生値」列、続けて全項目・全年の「移動平均」列 */
+  const header=["月日"];
+  FIVE_YEAR_CHART_DEFS.forEach(def=>{
+    years.forEach(year=>{
+      header.push(`${def.title}_${year}年_生値(${def.unit})`);
+    });
+  });
+  FIVE_YEAR_CHART_DEFS.forEach(def=>{
+    years.forEach(year=>{
+      header.push(`${def.title}_${year}年_${fiveYearMaWindow}日移動平均(${def.unit})`);
+    });
+  });
+
+  const rows=[header];
+  for(let i=0;i<fiveYearLabels.length;i++){
+    const row=[fiveYearLabels[i]];
+    FIVE_YEAR_CHART_DEFS.forEach((def)=>{
+      years.forEach((year,yi)=>{
+        const raw=fiveYearSeries[yi].values[def.key][i];
+        row.push(Number.isFinite(raw)?raw.toFixed(2):"");
+      });
+    });
+    FIVE_YEAR_CHART_DEFS.forEach((def,di)=>{
+      years.forEach((year,yi)=>{
+        const ma=maData[di][yi][i];
+        row.push(Number.isFinite(ma)?ma.toFixed(2):"");
+      });
+    });
+    rows.push(row);
+  }
+
+  downloadCSV(rows,"photeosync_five_year_moving_average",fiveYearStartDate||"5years",fiveYearEndDate||getJSTDateString());
+}
+
+function backToNormalView(){destroyFiveYearCharts();document.getElementById("five-year-charts").innerHTML="";document.getElementById("five-year-info").style.display="none";document.getElementById("back-to-5year").style.display="none";document.getElementById("five-year-reset-zoom").style.display="none";document.getElementById("five-year-csv-btn").style.display="none";document.getElementById("five-year-ma-controls").style.display="none";document.querySelector(".chart-wrapper").style.display="block";document.getElementById("daily-summary").style.display="block";document.querySelector(".day-buttons").parentElement.style.display="block";loadChart();}
 
 function renderChart(data, rangeValue, titleText) {
 

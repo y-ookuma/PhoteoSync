@@ -432,7 +432,7 @@
   <div style="display:flex; gap:8px; flex-wrap:wrap;">
     <button id="csv-export-daily-btn" class="toggle-btn" onclick="exportDailyCSV()">⬇ 日計CSV</button>
     <button id="five-year-btn" class="toggle-btn" onclick="showFiveYearAverages()">📈 過去5年分</button>
-    <button id="accumulation-btn" class="toggle-btn" onclick="openAccumulationPicker()">📊 積算データ</button>
+    <button id="accumulation-btn" class="toggle-btn" onclick="openAccumulationPicker()">📊 積算計算</button>
   </div>
 
   <!-- ▼ ライセンス表記 -->
@@ -1194,6 +1194,102 @@ function backToRangeView() {
 
 /* ▼ グラフ描画本体（期間表示・日別詳細表示の両方から呼び出す共通処理） */
 
+/* ▼ URL中のクエリパラメータを1つだけ差し替えたコピーを返す */
+function replaceUrlParam(url, key, value) {
+  try {
+    const u = new URL(url);
+    u.searchParams.set(key, value);
+    return u.toString();
+  } catch (e) {
+    return url;
+  }
+}
+
+/* ▼ archive-api（ERA5）はデータ反映に数日〜1日程度の遅延があり、許容される
+      end_dateの上限は日によって変動する（例：「end_date' is out of allowed
+      range from 1940-01-01 to 2026-09-04」）。このエラーメッセージから
+      実際に許容されている最終日を読み取る。 */
+function extractArchiveAllowedEndDate(message) {
+  const m = /end_date'? is out of allowed range from [\d-]+ to (\d{4}-\d{2}-\d{2})/i.exec(message || "");
+  return m ? m[1] : null;
+}
+
+/* ▼ Open-Meteoへ1回だけリクエストする内部関数。タイムアウト付き。
+      HTTPエラー時はステータスとOpen-Meteo側のreasonをエラーオブジェクトに保持する。 */
+async function fetchOpenMeteoJSONOnce(url, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) {
+      let reason = "";
+      try {
+        const body = await res.json();
+        reason = body && body.reason ? body.reason : "";
+      } catch (e) { /* JSONでなければ無視 */ }
+      const err = new Error(`Open-Meteo APIエラー (HTTP ${res.status})${reason ? `：${reason}` : ""}`);
+      err.status = res.status;
+      err.reason = reason;
+      throw err;
+    }
+    return await res.json();
+  } catch (err) {
+    clearTimeout(timer);
+    if (err.name === "AbortError") {
+      const e2 = new Error(`Open-Meteoへの通信がタイムアウトしました（${Math.round(timeoutMs / 1000)}秒経過）。電波状況をご確認のうえ、もう一度お試しください。`);
+      e2.isTimeout = true;
+      throw e2;
+    }
+    throw err;
+  }
+}
+
+/* ▼ Open-Meteo共通フェッチ関数
+      ・タイムアウト（既定15秒）を設ける（早朝など回線が不安定な時間帯に
+        リクエストが無応答のまま固まるのを防ぐ）
+      ・end_dateがarchive-apiの許容範囲外だった場合は、エラーメッセージから
+        実際に許容されている最終日を読み取り、その日付に自動修正して
+        即座に1回だけ再試行する（反映遅延の日数は日によって変わるため、
+        固定日数を決め打ちせず実際のAPI応答に合わせる）。
+      ・それ以外の通信エラー（タイムアウト等）は1回だけ自動リトライする。
+      ・最終的に失敗した場合はHTTPステータスとOpen-Meteo側のエラー内容
+        （reason）を含めたメッセージを投げる。原因不明のまま
+        「読み込みに失敗しました」とだけ表示される状態を避ける。 */
+async function fetchOpenMeteoJSON(url, { timeoutMs = 15000, retries = 1 } = {}) {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fetchOpenMeteoJSONOnce(url, timeoutMs);
+    } catch (err) {
+      lastErr = err;
+
+      if (err.status === 400) {
+        const allowedEndDate = extractArchiveAllowedEndDate(err.reason || err.message);
+        if (allowedEndDate) {
+          const adjustedUrl = replaceUrlParam(url, "end_date", allowedEndDate);
+          if (adjustedUrl !== url) {
+            console.warn(`Open-Meteo: end_dateを${allowedEndDate}に自動調整して再試行します`);
+            try {
+              return await fetchOpenMeteoJSONOnce(adjustedUrl, timeoutMs);
+            } catch (err2) {
+              lastErr = err2;
+            }
+          }
+        }
+        // 400番台は日付調整以外のリトライをしても解消しないため打ち切る
+        break;
+      }
+
+      if (attempt < retries) {
+        await new Promise(r => setTimeout(r, 1200));
+        continue;
+      }
+    }
+  }
+  throw lastErr;
+}
+
 /* ▼ Open-Meteoアーカイブ：過去5年分の気象データを取得し、年ごとに重ねて比較表示 */
 const OPEN_METEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive";
 let fiveYearCharts = [];
@@ -1343,9 +1439,7 @@ async function showFiveYearAverages(){
       `&daily=temperature_2m_min,temperature_2m_mean,temperature_2m_max,precipitation_sum,shortwave_radiation_sum` +
       `&timezone=${PHOTEOSYNC_TIMEZONE}`;
 
-    const res=await fetch(url);
-    if(!res.ok)throw new Error(`Open-Meteoアーカイブデータを取得できませんでした (${res.status})`);
-    const data=await res.json();
+    const data=await fetchOpenMeteoJSON(url);
     const d=data.daily;
     if(!d||!d.time||!d.time.length)throw new Error("Open-Meteoアーカイブデータが空でした。");
 
@@ -1382,10 +1476,13 @@ async function showFiveYearAverages(){
     const hasData=series.some(s=>s.values.mean.some(Number.isFinite));
     if(!hasData)throw new Error("対象地点のデータが取得できませんでした。");
 
+    /* ▼ end_dateが自動調整された場合に備え、実際にAPIから返ってきた最終日を採用する */
+    const actualLastDate=d.time[d.time.length-1];
+
     fiveYearLabels=labels;
     fiveYearSeries=series;
     fiveYearStartDate=startDate;
-    fiveYearEndDate=endDate;
+    fiveYearEndDate=actualLastDate<endDate?actualLastDate:endDate;
 
     container.innerHTML="";
     document.getElementById("five-year-reset-zoom").style.display="inline-flex";
@@ -1419,7 +1516,8 @@ function renderFiveYearCharts(windowSize){
   });
 
   const info=document.getElementById("five-year-info");
-  info.innerHTML=`📍 現在地の気象データ（緯度 ${Number(lat).toFixed(4)}, 経度 ${Number(lon).toFixed(4)}）<div class="five-year-note">表示期間：過去5年分（本日まで）。全グラフとも${windowSize}日移動平均。データ提供：Open-Meteo。線の色は今年に近いほど濃く、過去にさかのぼるほど薄く表示しています。<br>グラフはドラッグで範囲選択拡大／ホイールやピンチで拡大縮小／拡大後はドラッグで期間移動ができます（5つのグラフで期間は連動します）。</div>`;
+  const endDateLabel=fiveYearEndDate&&fiveYearEndDate<getJSTDateString()?`${fiveYearEndDate}まで（最新の観測データはこの時点まで反映されています）`:"本日まで";
+  info.innerHTML=`📍 現在地の気象データ（緯度 ${Number(lat).toFixed(4)}, 経度 ${Number(lon).toFixed(4)}）<div class="five-year-note">表示期間：過去5年分（${endDateLabel}）。全グラフとも${windowSize}日移動平均。データ提供：Open-Meteo。線の色は今年に近いほど濃く、過去にさかのぼるほど薄く表示しています。<br>グラフはドラッグで範囲選択拡大／ホイールやピンチで拡大縮小／拡大後はドラッグで期間移動ができます（5つのグラフで期間は連動します）。</div>`;
   info.style.display="block";
 
   document.querySelectorAll("#five-year-ma-buttons .ma-btn").forEach(btn=>{
@@ -1566,9 +1664,7 @@ async function loadAccumulationData(startDate,endDate){
     `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
     `&daily=temperature_2m_mean,shortwave_radiation_sum,precipitation_sum` +
     `&past_days=92&forecast_days=16&timezone=${PHOTEOSYNC_TIMEZONE}`;
-  const forecastRes=await fetch(forecastUrl);
-  if(!forecastRes.ok)throw new Error(`気象データを取得できませんでした (${forecastRes.status})`);
-  const forecastData=await forecastRes.json();
+  const forecastData=await fetchOpenMeteoJSON(forecastUrl);
 
   const actualByDate={};
   if(forecastData.daily&&forecastData.daily.time){
@@ -1601,9 +1697,7 @@ async function loadAccumulationData(startDate,endDate){
       `&start_date=${archStart}&end_date=${today}` +
       `&daily=temperature_2m_mean,shortwave_radiation_sum,precipitation_sum` +
       `&timezone=${PHOTEOSYNC_TIMEZONE}`;
-    const archRes=await fetch(archiveUrl);
-    if(!archRes.ok)throw new Error(`過去5年データを取得できませんでした (${archRes.status})`);
-    const archData=await archRes.json();
+    const archData=await fetchOpenMeteoJSON(archiveUrl);
     if(archData.daily&&archData.daily.time){
       const sums={};
       for(let i=0;i<archData.daily.time.length;i++){

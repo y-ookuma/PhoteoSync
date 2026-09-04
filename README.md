@@ -456,11 +456,37 @@ GitHub Repository
 
 ## 📜 ライセンス
 
-本プロジェクトは [MIT License](https://opensource.org/licenses/MIT) の下で公開しています。
+本プロジェクトは [BSD 3-Clause License](https://opensource.org/licenses/BSD-3-Clause) の下で公開しています。
 
 Copyright (c) 2026 [y-ookuma](https://github.com/y-ookuma/OMGHI/blob/main/README.md)
 
 気象データは [Open-Meteo.com](https://open-meteo.com/) 提供のものを使用しており、[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) ライセンスに基づいています🙌
+
+---
+
+## 🔤 名前の由来
+
+**PhoteoSync** は、Open‑Meteo の気象データ（GHI・直達光・散乱光・気温など）を用いて、植物の**光合成量・乾物生産・シンク需要**を時系列で可視化する解析ツールという構想から生まれた名前です。
+
+光合成の「光反応（**photo**）」と気象データ（**meteo**）、さらに果実・根・成長点などの**シンク器官（sink）**の需要を**同期（sync）**させることで、植物の生育を「光環境 × 生理 × 収量」の観点から総合的に理解できるように、という思いを込めています。
+
+* **photo**
+
+  * 光合成の光反応を象徴
+  * 葉が受け取る光子の量をモデル化
+
+* **meteo**
+
+  * Open‑Meteo の気象データを統合
+  * GHI・直達光・散乱光を光合成モデルに投入
+
+* **sync**
+
+  * 光合成産物の流れをシンク（**sink**）と同期
+  * 光環境・気象・シンク需要を一体化して解析
+  * 「自分の観測・モデル・考察を同期させる」という意味も込めている
+
+> **PhoteoSync** = 光（photo）＋ 気象（meteo）＋ シンク（sink）を同期（sync）するツール
 
 ---
 

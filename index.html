@@ -486,6 +486,51 @@ function getJSTDateJapanese(baseDate = new Date(), offsetDays = 0) {
   return `${d.getUTCFullYear()}年${d.getUTCMonth() + 1}月${d.getUTCDate()}日(${weekdays[d.getUTCDay()]})`;
 }
 
+/* "YYYY-MM-DD" 形式の日付文字列を「◯年◯月◯日(曜)」の日本語表記に変換する */
+function isoToJapanese(iso) {
+  const [y, m, d] = iso.split("-").map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d));
+  const weekdays = ["日", "月", "火", "水", "木", "金", "土"];
+  return `${y}年${m}月${d}日(${weekdays[date.getUTCDay()]})`;
+}
+
+/* ▼ PNGダウンロード共通処理：右下に控えめなコピーライト表記を焼き込んでからダウンロードする
+      （グラフ本体の描画には一切手を加えず、書き出し画像だけに追記する） */
+function exportCanvasAsPngWithWatermark(sourceCanvas, filename) {
+  const width = sourceCanvas.width;
+  const height = sourceCanvas.height;
+
+  const outCanvas = document.createElement("canvas");
+  outCanvas.width = width;
+  outCanvas.height = height;
+  const ctx = outCanvas.getContext("2d");
+
+  // 透過だと閲覧環境によって背景が黒くなることがあるため、白背景を敷いてからグラフを重ねる
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, width, height);
+  ctx.drawImage(sourceCanvas, 0, 0, width, height);
+
+  // 右下に小さく控えめに表示（グラフ内容とは重ならない余白部分に配置）
+  const scale = window.devicePixelRatio || 1;
+  const fontSize = Math.round(11 * scale);
+  const marginX = Math.round(10 * scale);
+  const marginY = Math.round(8 * scale);
+  ctx.font = `${fontSize}px sans-serif`;
+  ctx.fillStyle = "rgba(90, 90, 90, 0.65)";
+  ctx.textAlign = "right";
+  ctx.textBaseline = "bottom";
+  const currentYear = new Date().getFullYear();
+  ctx.fillText(`© ${currentYear} PhoteoSync`, width - marginX, height - marginY);
+
+  const url = outCanvas.toDataURL("image/png", 1.0);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
 /* Open-Meteoのtimezone=Asia/Tokyoで返る
    "YYYY-MM-DDTHH:MM" を「JSTの壁時計時刻」として数値化する。
    new Date("YYYY-MM-DDTHH:MM") はブラウザのローカルTZに依存するため使用しない。 */
@@ -988,7 +1033,7 @@ function loadChart() {
 
   document.getElementById("back-to-daily").style.display = "none";
 
-  const titleText = (dayOffset === 0) ? getJSTDateJapanese() : null;
+  const titleText = (start === end) ? isoToJapanese(start) : `${isoToJapanese(start)} 〜 ${isoToJapanese(end)}`;
 
   fetch(url)
     .then(res => res.json())
@@ -1202,15 +1247,10 @@ function exportMainChartPNG() {
   const startDate = times[0] ? times[0].slice(0, 10) : "data";
   const endDate = times[times.length - 1] ? times[times.length - 1].slice(0, 10) : startDate;
 
-  const url = window.chartInstance.toBase64Image("image/png", 1);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = endDate !== startDate
+  const filename = endDate !== startDate
     ? `photeosync_chart_${startDate}_${endDate}.png`
     : `photeosync_chart_${startDate}.png`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+  exportCanvasAsPngWithWatermark(window.chartInstance.canvas, filename);
 }
 
 /* ▼ 日別集計テーブルの日付をタップした際に、その日1日分のグラフ・時間別テーブルを表示 */
@@ -1228,7 +1268,7 @@ function showDayDetail(dateStr) {
     .then(res => res.json())
     .then(data => {
       currentData = data;
-      renderChart(data, 1, dateStr);
+      renderChart(data, 1, isoToJapanese(dateStr));
       buildHourlySummary(data);
       document.getElementById("back-to-daily").style.display = "block";
     });
@@ -1408,17 +1448,22 @@ function resetFiveYearZoom(){
   fiveYearCharts.forEach(c=>c.resetZoom());
 }
 
-/* ▼ グラフをPNG画像としてダウンロード */
-function downloadFiveYearChartPNG(chart,fileKey,windowSize){
-  const url=chart.toBase64Image("image/png",1);
+/* ▼ グラフをPNG画像としてダウンロード
+      （画面上はタイトルをHTML側で表示しているため、書き出し時だけグラフ内にタイトルを
+        一時的に表示してから元に戻す。これにより画面表示は変えずにPNGにはタイトルが写る） */
+function downloadFiveYearChartPNG(chart,fileKey,windowSize,title){
   const start=fiveYearStartDate||"start";
   const end=fiveYearEndDate||"end";
-  const a=document.createElement("a");
-  a.href=url;
-  a.download=`photeosync_five_year_${fileKey}_${windowSize}d_${start}_${end}.png`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+  const filename=`photeosync_five_year_${fileKey}_${windowSize}d_${start}_${end}.png`;
+
+  const originalTitle=chart.options.plugins.title;
+  chart.options.plugins.title={display:true,text:title,font:{size:16},padding:{top:4,bottom:12}};
+  chart.update("none");
+
+  exportCanvasAsPngWithWatermark(chart.canvas, filename);
+
+  chart.options.plugins.title=originalTitle;
+  chart.update("none");
 }
 
 function createFiveYearChart(title,unit,labels,series,windowSize,beginAtZero=false,baseColor="33,150,243",fileKey="chart"){
@@ -1430,7 +1475,7 @@ function createFiveYearChart(title,unit,labels,series,windowSize,beginAtZero=fal
   const datasets=series.map((s,i)=>({label:`${s.year}年`,data:movingAverage(s.values,windowSize),borderColor:`rgba(${baseColor},${op[i]})`,backgroundColor:"transparent",borderWidth:i===0?3:2,pointRadius:0,tension:.15,spanGaps:true}));
   const chart=new Chart(wrap.querySelector("canvas"),{type:"line",data:{labels,datasets},options:{responsive:true,maintainAspectRatio:false,interaction:{mode:"index",intersect:false},plugins:{legend:{position:"top"},tooltip:{callbacks:{label:ctx=>`${ctx.dataset.label}: ${ctx.raw==null?"--":Number(ctx.raw).toFixed(1)} ${unit}`}},zoom:{limits:{x:{min:"original",max:"original"}},pan:{enabled:true,mode:"x",onPanComplete:({chart})=>syncFiveYearZoom(chart)},zoom:{drag:{enabled:true,backgroundColor:"rgba(33,150,243,0.15)"},wheel:{enabled:true},pinch:{enabled:true},mode:"x",onZoomComplete:({chart})=>syncFiveYearZoom(chart)}}},scales:{x:{ticks:{maxTicksLimit:16},title:{display:true,text:"月日"}},y:{beginAtZero,title:{display:true,text:unit}}}}});
   fiveYearCharts.push(chart);
-  wrap.querySelector(".five-year-png-btn").addEventListener("click",()=>downloadFiveYearChartPNG(chart,fileKey,windowSize));
+  wrap.querySelector(".five-year-png-btn").addEventListener("click",()=>downloadFiveYearChartPNG(chart,fileKey,windowSize,title));
   wrap.querySelector(".five-year-chart-csv-btn").addEventListener("click",()=>downloadFiveYearSingleChartCSV(title,unit,labels,series,windowSize,fileKey));
 }
 
@@ -1866,13 +1911,8 @@ function exportAccumulationCSV(){
 function exportAccumulationPNG(){
   if(!accumulationChartInstance||!accumulationChartData){alert("ダウンロードできるグラフがありません。");return;}
   const {startDate,endDate}=accumulationChartData;
-  const url=accumulationChartInstance.toBase64Image("image/png",1);
-  const a=document.createElement("a");
-  a.href=url;
-  a.download=`photeosync_accumulation_${startDate}_${endDate}.png`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+  const filename=`photeosync_accumulation_${startDate}_${endDate}.png`;
+  exportCanvasAsPngWithWatermark(accumulationChartInstance.canvas, filename);
 }
 
 function renderChart(data, rangeValue, titleText) {

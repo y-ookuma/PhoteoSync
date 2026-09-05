@@ -510,11 +510,24 @@ function exportCanvasAsPngWithWatermark(sourceCanvas, filename) {
   ctx.fillRect(0, 0, width, height);
   ctx.drawImage(sourceCanvas, 0, 0, width, height);
 
-  // 右下に小さく控えめに表示（グラフ内容とは重ならない余白部分に配置）
   const scale = window.devicePixelRatio || 1;
   const fontSize = Math.round(11 * scale);
   const marginX = Math.round(10 * scale);
   const marginY = Math.round(8 * scale);
+
+  // 左上に現在地名（取得できていない場合は座標）を小さく控えめに表示
+  const locationLabel = currentPlaceName
+    ? currentPlaceName
+    : (lat && lon ? `${lat}, ${lon}` : null);
+  if (locationLabel) {
+    ctx.font = `${fontSize}px sans-serif`;
+    ctx.fillStyle = "rgba(90, 90, 90, 0.65)";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.fillText(locationLabel, marginX, marginY);
+  }
+
+  // 右下に小さく控えめに表示（グラフ内容とは重ならない余白部分に配置）
   ctx.font = `${fontSize}px sans-serif`;
   ctx.fillStyle = "rgba(90, 90, 90, 0.65)";
   ctx.textAlign = "right";
@@ -680,6 +693,7 @@ document.querySelectorAll(".day-btn").forEach(btn => {
 
 let lat = null;
 let lon = null;
+let currentPlaceName = null; // 逆ジオコーディングで取得できた地名（取得できない場合はnullのまま）
 let currentData = null;
 
 navigator.geolocation.getCurrentPosition(success, error);
@@ -737,6 +751,7 @@ function success(pos) {
 
       // muniNameとoazaは同一レコード由来なので、対応しない組み合わせにならない
       const placeName = `${muniName}${oaza}`;
+      currentPlaceName = placeName || null;
 
       document.getElementById("title").innerHTML =
         `${TITLE_HTML}<br>` +

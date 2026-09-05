@@ -485,7 +485,7 @@ GitHub Repository
 
 本プロジェクトは [BSD 3-Clause License](https://opensource.org/licenses/BSD-3-Clause) の下で公開しています。
 
-Copyright (c) 2026 [y-ookuma](https://github.com/y-ookuma/OMGHI/blob/main/README.md)
+Copyright (c) 2026 [y-ookuma](https://github.com/y-ookuma/PhoteoSync/blob/main/README.md)
 
 気象データは [Open-Meteo.com](https://open-meteo.com/) 提供のものを使用しており、[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) ライセンスに基づいています🙌
 

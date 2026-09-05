@@ -346,7 +346,7 @@
   <div id="accumulation-info"></div>
   <div class="main-chart-toolbar" id="accumulation-chart-toolbar" style="display:none;">
     <button id="accumulation-csv-btn" class="chart-toolbar-btn" onclick="exportAccumulationCSV()">⬇ CSV</button>
-    <button id="accumulation-png-btn" class="chart-toolbar-btn" onclick="exportAccumulationPNG()">⬇ グラフPNG</button>
+    <button id="accumulation-png-btn" class="chart-toolbar-btn" onclick="exportAccumulationPNG()">⬇ PNG</button>
   </div>
   <div class="chart-wrapper" id="accumulation-chart-wrapper" style="display:none;">
     <div class="chart-inner" id="accumulation-chart-inner">
@@ -356,7 +356,7 @@
 
   <div class="main-chart-toolbar" id="main-chart-toolbar">
     <button id="csv-export-hourly-btn" class="chart-toolbar-btn" onclick="exportHourlyCSV()">⬇ CSV</button>
-    <button id="chart-png-btn" class="chart-toolbar-btn" onclick="exportMainChartPNG()">⬇ グラフPNG</button>
+    <button id="chart-png-btn" class="chart-toolbar-btn" onclick="exportMainChartPNG()">⬇ PNG</button>
   </div>
   <div class="chart-wrapper" id="main-chart-wrapper">
     <div class="chart-inner" id="chart-inner">
@@ -430,7 +430,6 @@
   </div>
 
   <div style="display:flex; gap:8px; flex-wrap:wrap;">
-    <button id="csv-export-daily-btn" class="toggle-btn" onclick="exportDailyCSV()">⬇ 日計CSV</button>
     <button id="five-year-btn" class="toggle-btn" onclick="showFiveYearAverages()">📈 過去5年分</button>
     <button id="accumulation-btn" class="toggle-btn" onclick="openAccumulationPicker()">📊 積算計算</button>
   </div>
@@ -851,7 +850,10 @@ function buildDailySummary(data) {
   }
 
   let html = `
-    <h3>1日ごとの集計</h3>
+    <h3 style="display:flex; align-items:center; justify-content:center; gap:10px;">
+      <span>1日ごとの集計</span>
+      <button type="button" class="chart-toolbar-btn" onclick="exportDailyCSV()">⬇ CSV</button>
+    </h3>
     <div class="table-scroll">
     <table border="1" cellpadding="6" style="border-collapse: collapse;">
       <tr style="background:#eee;">
@@ -1101,6 +1103,16 @@ function exportDailyCSV() {
 
   const dayKeys = Object.keys(daily);
 
+  const allMaxT = [];
+  const allAvgT = [];
+  const allMinT = [];
+  let totalSW = 0;
+  let totalPAR = 0;
+  let totalDLI = 0;
+  let totalRain = 0;
+  let totalSWraw = 0;
+  let totalDiffuseRaw = 0;
+
   for (const day of dayKeys) {
     const t = daily[day].temps;
     const r = daily[day].rains;
@@ -1123,6 +1135,16 @@ function exportDailyCSV() {
     const dayDiffuseFraction = calcDiffuseFraction(sumSWraw, sumDiffuseRaw);
     const sunTimes = getSunTimeStrings(day, lat, lon);
 
+    allMaxT.push(maxT);
+    allAvgT.push(avgT);
+    allMinT.push(minT);
+    totalSW += sumSW;
+    totalPAR += sumPAR;
+    totalDLI += sumDLI;
+    totalRain += sumRain;
+    totalSWraw += sumSWraw;
+    totalDiffuseRaw += sumDiffuseRaw;
+
     rows.push([
       day,
       maxT.toFixed(1),
@@ -1135,6 +1157,32 @@ function exportDailyCSV() {
       sumRain.toFixed(1),
       sunTimes.sunrise,
       sunTimes.sunset
+    ]);
+  }
+
+  /* ▼ サマリー行（buildDailySummaryの表と同じ集計方法）を追加 */
+  if (dayKeys.length > 0) {
+    const summaryMaxT = Math.max(...allMaxT).toFixed(1);
+    const summaryAvgT = (allAvgT.reduce((a, b) => a + b, 0) / allAvgT.length).toFixed(1);
+    const summaryMinT = Math.min(...allMinT).toFixed(1);
+    const summarySW = totalSW.toFixed(2);
+    const summaryDiffuseFraction = calcDiffuseFraction(totalSWraw, totalDiffuseRaw).toFixed(0);
+    const summaryPAR = totalPAR.toFixed(2);
+    const summaryDLI = totalDLI.toFixed(1);
+    const summaryRain = totalRain.toFixed(1);
+
+    rows.push([
+      "サマリー",
+      summaryMaxT,
+      summaryAvgT,
+      summaryMinT,
+      summarySW,
+      summaryDiffuseFraction,
+      summaryPAR,
+      summaryDLI,
+      summaryRain,
+      "-",
+      "-"
     ]);
   }
 
@@ -1423,7 +1471,6 @@ async function showFiveYearAverages(){
   document.getElementById("glossary-toggle-btn").style.display="none";
   document.getElementById("glossary-toggle-content").classList.remove("open");
   document.getElementById("glossary-toggle-btn").classList.remove("open");
-  document.getElementById("csv-export-daily-btn").style.display="none";
   document.getElementById("five-year-btn").style.display="none";
   document.getElementById("accumulation-btn").style.display="none";
   document.getElementById("back-to-5year").style.display="block";
@@ -1605,7 +1652,6 @@ function backToNormalView(){
   document.getElementById("daily-summary").style.display="block";
   document.querySelector(".day-buttons").parentElement.style.display="block";
   document.getElementById("glossary-toggle-btn").style.display="inline-flex";
-  document.getElementById("csv-export-daily-btn").style.display="inline-flex";
   document.getElementById("five-year-btn").style.display="inline-flex";
   document.getElementById("accumulation-btn").style.display="inline-flex";
   loadChart();
@@ -1625,7 +1671,6 @@ function openAccumulationPicker(){
   document.getElementById("glossary-toggle-btn").style.display="none";
   document.getElementById("glossary-toggle-content").classList.remove("open");
   document.getElementById("glossary-toggle-btn").classList.remove("open");
-  document.getElementById("csv-export-daily-btn").style.display="none";
   document.getElementById("five-year-btn").style.display="none";
   document.getElementById("accumulation-btn").style.display="none";
   document.getElementById("back-to-accumulation").style.display="block";

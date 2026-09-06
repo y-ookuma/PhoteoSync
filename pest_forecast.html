@@ -1,0 +1,1056 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>病害虫発生予察 - PhoteoSync</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<style>
+  body {
+    margin: 10px auto;
+    font-family: sans-serif;
+    max-width: 900px;
+    min-width: 320px;
+    padding: 0 10px;
+    box-sizing: border-box;
+  }
+  * { box-sizing: border-box; }
+
+  h2 { font-size: 1.2rem; margin-bottom: 4px; }
+  label { display: block; margin-bottom: 6px; font-weight: bold; }
+
+  #location-box {
+    margin: 8px 0 16px;
+    padding: 10px 12px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    background: #f7f7f7;
+    font-size: 0.85rem;
+    line-height: 1.8;
+  }
+  #location-box input[type="number"] {
+    width: 100px;
+    font-size: 0.9rem;
+    padding: 4px 6px;
+    border: 1px solid #888;
+    border-radius: 6px;
+  }
+
+  .toggle-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin: 6px 4px 6px 0;
+    padding: 8px 14px;
+    font-size: 0.9rem;
+    border: 1px solid #888;
+    border-radius: 6px;
+    background: #f0f0f0;
+    cursor: pointer;
+  }
+
+  .picker-box {
+    margin-bottom: 15px;
+    padding: 12px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    background: #fafafa;
+  }
+  .picker-box select,
+  .picker-box input[type="date"],
+  .picker-box input[type="number"] {
+    font-size: 1rem;
+    padding: 6px 8px;
+    margin: 0 8px 10px 0;
+    border: 1px solid #888;
+    border-radius: 6px;
+    background: #fff;
+  }
+
+  .note-box {
+    font-size: 0.8rem;
+    line-height: 1.6;
+    color: #555;
+    background: #fff;
+    border: 1px solid #eee;
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin: 4px 0 12px;
+  }
+
+  #pest-info {
+    display: none;
+    margin: 4px 0 12px;
+    padding: 8px 12px;
+    border-radius: 6px;
+    background: #f7f7f7;
+    font-size: 0.85rem;
+    line-height: 1.6;
+  }
+  .loading-box { padding: 12px; text-align: center; color: #666; }
+
+  .chart-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+  .chart-toolbar-btn {
+    font-size: 0.8rem;
+    padding: 5px 10px;
+    border: 1px solid #888;
+    border-radius: 6px;
+    background: #f0f0f0;
+    cursor: pointer;
+  }
+
+  .chart-wrapper {
+    width: 100%;
+    height: 420px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .chart-inner { height: 100%; }
+  canvas { width: 100% !important; height: 100% !important; }
+
+  #pest-refs {
+    display: none;
+    font-size: 0.75rem;
+    color: #888;
+    margin-top: 6px;
+    line-height: 1.7;
+  }
+
+  footer.license {
+    margin-top: 30px;
+    padding-top: 15px;
+    border-top: 1px solid #ddd;
+    font-size: 0.75rem;
+    line-height: 1.6;
+    color: #777;
+    text-align: center;
+  }
+
+  @media (max-width: 600px) {
+    h2 { font-size: 1rem; }
+    .chart-wrapper { height: 480px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="main-wrapper">
+  <a href="index.html" class="toggle-btn" style="text-decoration:none; color:inherit;">← PhoteoSyncに戻る</a>
+  <h2>🐛 病害虫発生予察（PhoteoSync）</h2>
+
+  <div id="location-box">
+    📍 現在地：<span id="location-display">取得中…</span>
+    <button type="button" class="toggle-btn" onclick="requestLocation()" style="margin-left:8px;">再取得</button>
+    <br>
+    緯度：<input type="number" id="manual-lat" step="0.0001" placeholder="35.6812">
+    経度：<input type="number" id="manual-lon" step="0.0001" placeholder="139.7671">
+    <button type="button" class="toggle-btn" onclick="applyManualLocation()">この座標を使う</button>
+  </div>
+
+  <div class="picker-box" id="pest-picker">
+    <label for="crop-select">作物を選択してください</label>
+    <select id="crop-select" onchange="onCropChange()"></select>
+
+    <label for="target-select">対象の病害虫を選択してください</label>
+    <select id="target-select" onchange="onTargetChange()"></select>
+
+    <div id="target-model-info" class="note-box"></div>
+
+    <div id="custom-inputs" style="display:none;">
+      <label style="display:inline;">発育零点(℃)：</label>
+      <input type="number" id="custom-basetemp" step="0.1" style="width:80px;">
+      <label style="display:inline;">有効積算温度(日度)：</label>
+      <input type="number" id="custom-dd" step="1" style="width:90px;">
+    </div>
+
+    <label for="pest-start-date">起算日／集計開始日を選択してください</label>
+    <input type="date" id="pest-start-date">
+    <button type="button" class="toggle-btn" onclick="runForecast()">🐛 発生予察を実行</button>
+  </div>
+
+  <div id="pest-info"></div>
+  <div class="chart-toolbar" id="pest-chart-toolbar" style="display:none;">
+    <button id="pest-csv-btn" class="chart-toolbar-btn" onclick="exportPestCSV()">⬇ CSV</button>
+    <button id="pest-png-btn" class="chart-toolbar-btn" onclick="exportPestPNG()">⬇ PNG</button>
+  </div>
+  <div class="chart-wrapper" id="pest-chart-wrapper" style="display:none;">
+    <div class="chart-inner" id="pest-chart-inner">
+      <canvas id="pest-chart"></canvas>
+    </div>
+  </div>
+  <div id="pest-refs" class="note-box"></div>
+
+  <footer class="license">
+    PhoteoSync 病害虫発生予察（別ツール）｜気象データ: Open-Meteo<br>
+    表示される発育零点・有効積算温度・発生好適条件は公表資料に基づく参考値です。実際の防除の判断は、必ずお住まいの都道府県病害虫防除所が発表する「病害虫発生予察情報」もあわせてご確認ください。
+  </footer>
+</div>
+
+<script>
+/* ==========================================================================
+   JST（Asia/Tokyo）統一ユーティリティ
+   ========================================================================== */
+const PHOTEOSYNC_TIMEZONE = "Asia/Tokyo";
+
+function getJSTParts(baseDate = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: PHOTEOSYNC_TIMEZONE, year: "numeric", month: "2-digit", day: "2-digit"
+  }).formatToParts(baseDate);
+  const out = {};
+  for (const part of parts) out[part.type] = part.value;
+  return { year: Number(out.year), month: Number(out.month), day: Number(out.day) };
+}
+
+function getJSTDateString(baseDate = new Date(), offsetDays = 0) {
+  const p = getJSTParts(baseDate);
+  const d = new Date(Date.UTC(p.year, p.month - 1, p.day + offsetDays));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+}
+
+function addJSTDays(dateStr, offsetDays) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr);
+  if (!m) return dateStr;
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]) + offsetDays));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+}
+
+function isoToJapanese(iso) {
+  const [y, m, d] = iso.split("-").map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d));
+  const weekdays = ["日", "月", "火", "水", "木", "金", "土"];
+  return `${y}年${m}月${d}日(${weekdays[date.getUTCDay()]})`;
+}
+
+/* ==========================================================================
+   Open-Meteo 共通フェッチ処理（PhoteoSync本体と同等のリトライ・タイムアウト付き）
+   ========================================================================== */
+const OPEN_METEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive";
+
+function replaceUrlParam(url, key, value) {
+  try {
+    const u = new URL(url);
+    u.searchParams.set(key, value);
+    return u.toString();
+  } catch (e) { return url; }
+}
+
+function extractArchiveAllowedEndDate(message) {
+  const m = /end_date'? is out of allowed range from [\d-]+ to (\d{4}-\d{2}-\d{2})/i.exec(message || "");
+  return m ? m[1] : null;
+}
+
+async function fetchOpenMeteoJSONOnce(url, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) {
+      let reason = "";
+      try {
+        const body = await res.json();
+        reason = body && body.reason ? body.reason : "";
+      } catch (e) { /* JSONでなければ無視 */ }
+      const err = new Error(`Open-Meteo APIエラー (HTTP ${res.status})${reason ? `：${reason}` : ""}`);
+      err.status = res.status; err.reason = reason;
+      throw err;
+    }
+    return await res.json();
+  } catch (err) {
+    clearTimeout(timer);
+    if (err.name === "AbortError") {
+      const e2 = new Error(`Open-Meteoへの通信がタイムアウトしました（${Math.round(timeoutMs / 1000)}秒経過）。電波状況をご確認のうえ、もう一度お試しください。`);
+      e2.isTimeout = true;
+      throw e2;
+    }
+    throw err;
+  }
+}
+
+async function fetchOpenMeteoJSON(url, { timeoutMs = 15000, retries = 1 } = {}) {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fetchOpenMeteoJSONOnce(url, timeoutMs);
+    } catch (err) {
+      lastErr = err;
+      if (err.status === 400) {
+        const allowedEndDate = extractArchiveAllowedEndDate(err.reason || err.message);
+        if (allowedEndDate) {
+          const adjustedUrl = replaceUrlParam(url, "end_date", allowedEndDate);
+          if (adjustedUrl !== url) {
+            try { return await fetchOpenMeteoJSONOnce(adjustedUrl, timeoutMs); }
+            catch (err2) { lastErr = err2; }
+          }
+        }
+        break;
+      }
+      if (attempt < retries) { await new Promise(r => setTimeout(r, 1200)); continue; }
+    }
+  }
+  throw lastErr;
+}
+
+/* ==========================================================================
+   CSV / PNG ダウンロード共通処理
+   ========================================================================== */
+function downloadCSV(rows, filenamePrefix, startDate, endDate) {
+  const csv = "\uFEFF" + rows.map(r => r.join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const filename = endDate && endDate !== startDate
+    ? `${filenamePrefix}_${startDate}_${endDate}.csv`
+    : `${filenamePrefix}_${startDate}.csv`;
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function exportCanvasAsPngWithWatermark(sourceCanvas, filename) {
+  const width = sourceCanvas.width, height = sourceCanvas.height;
+  const outCanvas = document.createElement("canvas");
+  outCanvas.width = width; outCanvas.height = height;
+  const ctx = outCanvas.getContext("2d");
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, width, height);
+  ctx.drawImage(sourceCanvas, 0, 0, width, height);
+
+  const scale = window.devicePixelRatio || 1;
+  const fontSize = Math.round(11 * scale);
+  const marginX = Math.round(10 * scale);
+  const marginY = Math.round(8 * scale);
+
+  const locationLabel = currentPlaceName
+    ? currentPlaceName
+    : (lat && lon ? `${lat}, ${lon}` : null);
+  if (locationLabel) {
+    ctx.font = `${fontSize}px sans-serif`;
+    ctx.fillStyle = "rgba(90, 90, 90, 0.65)";
+    ctx.textAlign = "left"; ctx.textBaseline = "top";
+    ctx.fillText(locationLabel, marginX, marginY);
+  }
+  ctx.font = `${fontSize}px sans-serif`;
+  ctx.fillStyle = "rgba(90, 90, 90, 0.65)";
+  ctx.textAlign = "right"; ctx.textBaseline = "bottom";
+  ctx.fillText(`© ${new Date().getFullYear()} PhoteoSync`, width - marginX, height - marginY);
+
+  const url = outCanvas.toDataURL("image/png", 1.0);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+}
+
+/* ==========================================================================
+   位置情報（現在地取得 + 国土地理院(GSI)による逆ジオコーディングで
+   市区町村名・大字名まで取得。取得できない場合は座標のみ表示） or 手動入力
+   ========================================================================== */
+let lat = null;
+let lon = null;
+let currentPlaceName = null; // 逆ジオコーディングで取得できた地名（取得できない場合はnullのまま）
+
+/* ▼ 国土地理院(GSI) 市区町村変換テーブル(muni.js)の読み込み
+      muniCd と lv01Nm(大字等)は同じGSIレコードから得られるため、
+      市区町村と大字が食い違うことがない */
+function loadMuniTable() {
+  return new Promise((resolve, reject) => {
+    if (window.GSI && window.GSI.MUNI_ARRAY) {
+      resolve();
+      return;
+    }
+    window.GSI = window.GSI || {};
+    const script = document.createElement("script");
+    script.src = "https://maps.gsi.go.jp/js/muni.js";
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error("muni.js load failed"));
+    document.head.appendChild(script);
+  });
+}
+
+/* ▼ 緯度・経度から市区町村名・大字名を逆ジオコーディングする */
+function reverseGeocode(latVal, lonVal) {
+  return Promise.all([
+    loadMuniTable(),
+    fetch(`https://mreversegeocoder.gsi.go.jp/reverse-geocoder/LonLatToAddress?lat=${latVal}&lon=${lonVal}`)
+      .then(res => res.json())
+  ])
+    .then(([, geo]) => {
+      const results = geo && geo.results;
+      if (!results || !results.muniCd) {
+        throw new Error("住所情報が見つかりませんでした");
+      }
+      const muniKey = String(Number(results.muniCd));
+      const muniRow = window.GSI.MUNI_ARRAY ? window.GSI.MUNI_ARRAY[muniKey] : null;
+      const muniName = muniRow ? muniRow.split(",")[3] : "";
+      const oaza = results.lv01Nm || "";
+      const placeName = `${muniName}${oaza}`;
+      currentPlaceName = placeName || null;
+      document.getElementById("location-display").textContent =
+        `${latVal}, ${lonVal}${placeName ? "　" + placeName : ""}`;
+    })
+    .catch(() => {
+      // GSIでデータが見つからない地域(離島・一部山間部等)は座標のみ表示
+      currentPlaceName = null;
+      document.getElementById("location-display").textContent = `${latVal}, ${lonVal}`;
+    });
+}
+
+function requestLocation() {
+  if (!navigator.geolocation) {
+    document.getElementById("location-display").textContent = "このブラウザは位置情報取得に対応していません。手動で入力してください。";
+    return;
+  }
+  document.getElementById("location-display").textContent = "取得中…";
+  navigator.geolocation.getCurrentPosition(
+    pos => {
+      lat = pos.coords.latitude.toFixed(6);
+      lon = pos.coords.longitude.toFixed(6);
+      document.getElementById("location-display").textContent = `${lat}, ${lon}（地名取得中…）`;
+      reverseGeocode(lat, lon);
+    },
+    () => {
+      document.getElementById("location-display").textContent = "取得できませんでした（手動入力をご利用ください）";
+    }
+  );
+}
+
+function applyManualLocation() {
+  const la = Number(document.getElementById("manual-lat").value);
+  const lo = Number(document.getElementById("manual-lon").value);
+  if (!Number.isFinite(la) || !Number.isFinite(lo)) {
+    alert("緯度・経度を数値で入力してください。");
+    return;
+  }
+  lat = la.toFixed(6); lon = lo.toFixed(6);
+  document.getElementById("location-display").textContent = `${lat}, ${lon}（手動入力・地名取得中…）`;
+  reverseGeocode(lat, lon);
+}
+
+window.addEventListener("load", requestLocation);
+
+/* ==========================================================================
+   作物・病害虫マスターデータ（crops_InsectPests.json より）
+   ========================================================================== */
+const CROP_DATA = [{"id": "tomato", "name_ja": "トマト", "category": "果菜類（ナス科）", "main_diseases": ["疫病", "葉かび病", "うどんこ病", "灰色かび病", "萎凋病", "モザイク病（ウイルス病）"], "main_pests": ["アブラムシ類", "コナジラミ類（オンシツコナジラミ等）", "ハダニ類", "オオタバコガ", "ヨトウムシ類", "アザミウマ類"]}, {"id": "cucumber", "name_ja": "キュウリ", "category": "果菜類（ウリ科）", "main_diseases": ["うどんこ病", "べと病", "灰色かび病", "炭疽病", "褐斑病", "つる割病", "斑点細菌病", "ウイルス病"], "main_pests": ["アブラムシ類", "コナジラミ類", "ハダニ類", "ウリハムシ", "アザミウマ類", "ハモグリバエ類", "ネコブセンチュウ類"]}, {"id": "eggplant", "name_ja": "ナス", "category": "果菜類（ナス科）", "main_diseases": ["半身萎凋病", "萎凋病", "うどんこ病", "灰色かび病", "疫病", "モザイク病（ウイルス病）"], "main_pests": ["アブラムシ類", "ハダニ類", "アザミウマ類", "ヨトウムシ類", "コナジラミ類", "カメムシ類"]}, {"id": "pepper", "name_ja": "ピーマン", "category": "果菜類（ナス科）", "main_diseases": ["斑点病", "うどんこ病", "疫病", "灰色かび病", "モザイク病（ウイルス病）"], "main_pests": ["アブラムシ類", "アザミウマ類", "ハダニ類", "コナジラミ類", "ヨトウムシ類"]}, {"id": "cabbage", "name_ja": "キャベツ", "category": "葉菜類（アブラナ科）", "main_diseases": ["黒腐病", "軟腐病", "べと病", "根こぶ病", "うどんこ病"], "main_pests": ["アオムシ（モンシロチョウ幼虫）", "コナガ", "ヨトウムシ類", "アブラムシ類", "キスジノミハムシ", "ハスモンヨトウ"]}, {"id": "lettuce", "name_ja": "レタス", "category": "葉菜類（キク科）", "main_diseases": ["灰色かび病", "べと病", "軟腐病", "菌核病", "モザイク病（ウイルス病）"], "main_pests": ["アブラムシ類", "ヨトウムシ類", "ハモグリバエ類", "ナメクジ", "アザミウマ類"]}, {"id": "chinese_cabbage", "name_ja": "ハクサイ", "category": "葉菜類（アブラナ科）", "main_diseases": ["根こぶ病", "べと病", "軟腐病", "黒斑病", "うどんこ病"], "main_pests": ["コナガ", "アオムシ", "ヨトウムシ類", "キスジノミハムシ", "アブラムシ類"]}, {"id": "onion", "name_ja": "タマネギ", "category": "根菜類（ユリ科）", "main_diseases": ["べと病", "灰色かび病", "白色疫病", "軟腐病"], "main_pests": ["ネギアブラムシ", "ハモグリバエ類", "ネギハモグリバエ", "ヨトウムシ類"]}, {"id": "carrot", "name_ja": "ニンジン", "category": "根菜類（セリ科）", "main_diseases": ["うどんこ病", "葉枯病", "黒斑病", "軟腐病"], "main_pests": ["キアゲハ幼虫", "アブラムシ類", "ヨトウムシ類", "ネキリムシ類"]}, {"id": "daikon", "name_ja": "ダイコン", "category": "根菜類（アブラナ科）", "main_diseases": ["根こぶ病", "べと病", "黒斑病", "軟腐病", "そうか病"], "main_pests": ["キスジノミハムシ", "ヨトウムシ類", "アブラムシ類", "コナガ", "ネキリムシ類"]}, {"id": "spinach", "name_ja": "ホウレンソウ", "category": "葉菜類（ヒユ科）", "main_diseases": ["べと病", "うどんこ病", "萎凋病", "葉枯病"], "main_pests": ["アブラムシ類", "ヨトウムシ類", "ハモグリバエ類"]}, {"id": "broccoli", "name_ja": "ブロッコリー", "category": "花菜類（アブラナ科）", "main_diseases": ["べと病", "黒斑病", "軟腐病", "根こぶ病"], "main_pests": ["コナガ", "アオムシ", "ヨトウムシ類", "アブラムシ類"]}, {"id": "welsh_onion", "name_ja": "ネギ", "category": "葉菜類（ユリ科）", "main_diseases": ["さび病", "べと病", "黒斑病", "軟腐病"], "main_pests": ["ネギアブラムシ", "ハモグリバエ類", "ヨトウムシ類", "ネギコガ"]}, {"id": "potato", "name_ja": "ジャガイモ", "category": "根菜類（ナス科）", "main_diseases": ["そうか病", "疫病", "黒あざ病", "モザイク病（ウイルス病）"], "main_pests": ["ヨトウムシ類", "コロラドハムシ（地域による）", "アブラムシ類", "センチュウ類"]}, {"id": "sweet_potato", "name_ja": "サツマイモ", "category": "根菜類（ヒルガオ科）", "main_diseases": ["黒斑病", "立枯病", "モザイク病（ウイルス病）", "そうか病"], "main_pests": ["コガネムシ類幼虫", "ヨトウムシ類", "アブラムシ類", "センチュウ類"]}, {"id": "pumpkin", "name_ja": "カボチャ", "category": "果菜類（ウリ科）", "main_diseases": ["うどんこ病", "べと病", "炭疽病", "つる割病"], "main_pests": ["ウリハムシ", "アブラムシ類", "ヨトウムシ類", "ハダニ類"]}, {"id": "watermelon", "name_ja": "スイカ", "category": "果菜類（ウリ科）", "main_diseases": ["つる割病", "炭疽病", "うどんこ病", "べと病", "モザイク病（ウイルス病）"], "main_pests": ["ウリハムシ", "アブラムシ類", "ヨトウムシ類", "ハダニ類"]}, {"id": "corn", "name_ja": "トウモロコシ", "category": "穀類（イネ科）", "main_diseases": ["ごま葉枯病", "さび病", "すす紋病"], "main_pests": ["アワノメイガ", "ヨトウムシ類", "アブラムシ類", "カメムシ類"]}, {"id": "snap_bean", "name_ja": "インゲン", "category": "豆類（マメ科）", "main_diseases": ["炭疽病", "斑紋病", "モザイク病（ウイルス病）", "うどんこ病"], "main_pests": ["アブラムシ類", "ハモグリバエ類", "ヨトウムシ類", "マメシンクイガ"]}, {"id": "edamame", "name_ja": "エダマメ（ダイズ）", "category": "豆類（マメ科）", "main_diseases": ["べと病", "紫斑病", "炭疽病", "ウイルス病"], "main_pests": ["カメムシ類", "ハスモンヨトウ", "アブラムシ類", "シンクイムシ類"]}, {"id": "okra", "name_ja": "オクラ", "category": "果菜類（アオイ科）", "main_diseases": ["うどんこ病", "立枯病", "モザイク病（ウイルス病）"], "main_pests": ["アブラムシ類", "ハダニ類", "アザミウマ類", "ヨトウムシ類"]}, {"id": "chingensai", "name_ja": "チンゲンサイ", "category": "葉菜類（アブラナ科）", "main_diseases": ["べと病", "根こぶ病", "軟腐病", "黒斑病"], "main_pests": ["コナガ", "アオムシ", "キスジノミハムシ", "アブラムシ類"]}, {"id": "komatsuna", "name_ja": "コマツナ", "category": "葉菜類（アブラナ科）", "main_diseases": ["べと病", "根こぶ病", "軟腐病", "黒斑病"], "main_pests": ["コナガ", "アオムシ", "キスジノミハムシ", "アブラムシ類", "ヨトウムシ類"]}, {"id": "strawberry", "name_ja": "イチゴ", "category": "果菜類（バラ科）", "main_diseases": ["うどんこ病", "灰色かび病", "炭疽病", "疫病", "萎黄病"], "main_pests": ["ハダニ類", "アザミウマ類", "コナジラミ類", "ハスモンヨトウ", "オオタバコガ", "アブラムシ類"]}, {"id": "ginger", "name_ja": "ショウガ", "category": "根菜類（ショウガ科）", "main_diseases": ["根茎腐敗病", "白絹病", "葉枯病"], "main_pests": ["センチュウ類", "ヨトウムシ類", "アブラムシ類"]}, {"id": "rice", "name_ja": "イネ（水稲）", "category": "穀類（イネ科）", "main_diseases": ["いもち病（葉いもち・穂いもち）", "紋枯病", "ごま葉枯病", "白葉枯病", "もみ枯細菌病", "縞葉枯病（ウイルス病）"], "main_pests": ["ウンカ類（トビイロウンカ・セジロウンカ等）", "ニカメイチュウ", "イネミズゾウムシ", "イネアオムシ", "カメムシ類", "ヨトウムシ類"]}];
+
+/* ==========================================================================
+   病害虫発生予察機能
+   有効積算温度（発育零点・有効積算温度）や簡易的な気象条件を用いて、
+   代表的な病害虫の発生時期・警戒日の「目安」を計算する。
+   ※ 下記の発育零点・有効積算温度・発生好適条件は、各種公表資料（出典は画面下部に表示）を
+     もとにした代表的な参考値であり、地域・品種・年次・害虫の系統によって差があります。
+     実際の防除の判断は、必ずお住まいの都道府県病害虫防除所が発表する
+     「病害虫発生予察情報」もあわせてご確認ください。
+   ========================================================================== */
+const MODEL_LIBRARY = {
+  aphid: {
+    name: "アブラムシ類（モモアカアブラムシ等）",
+    type: "insect",
+    baseTemp: 5.0,
+    dd: 135,
+    note: "発育零点・有効積算温度は種や条件により幅があります（発育零点 約3〜10℃、幼虫→成虫の有効積算温度 約120〜150日度）。ここでは代表値として発育零点5.0℃・有効積算温度135日度を用いています。",
+    source: "シンジェンタジャパン「害虫の活動と有効積算温度の関係」／カクイチ農業メディア「積算温度の活用法」"
+  },
+  thrips: {
+    name: "アザミウマ類（チャノキイロアザミウマ）",
+    type: "insect",
+    baseTemp: 9.1,
+    dd: 280,
+    note: "チャノキイロアザミウマの卵〜成虫の発育零点9.1℃・有効積算温度280日度を用いています。ネギアザミウマ等、他のアザミウマ種では値が異なります。",
+    source: "シンジェンタジャパン「害虫の活動と有効積算温度の関係」"
+  },
+  tabakoga: {
+    name: "オオタバコガ",
+    type: "insect",
+    baseTemp: 8.4,
+    dd: 450,
+    note: "卵の発育零点は約8.4℃、卵〜成虫の有効積算温度は目安として約400〜500日度とされています。ここでは中間値450日度を用いています。",
+    source: "カクイチ農業メディア「積算温度の活用法」"
+  },
+  stinkbug: {
+    name: "カメムシ類（クモヘリカメムシ等）",
+    type: "insect",
+    baseTemp: 11.6,
+    dd: 189,
+    note: "クモヘリカメムシの産卵〜羽化の発育零点11.6℃・有効積算温量189.1日度（河合, 1985）を用いています。カメムシ類は種によって値の差が大きく（他資料では発育零点約12℃・必要積算温度約400〜450℃とするものもあります）、対象作物・地域の主要種に応じて数値が異なる点にご留意ください。",
+    source: "農林水産省 気候変動影響評価資料／カクイチ農業メディア"
+  },
+  whitefly: {
+    name: "コナジラミ類（オンシツコナジラミ）",
+    type: "insect",
+    baseTemp: 8.6,
+    dd: 357,
+    note: "オンシツコナジラミの発育零点は約8.3〜8.9℃、卵〜成虫の有効積算温度は約357日度と報告されています（中間値8.6℃を用いています）。タバココナジラミなど他種では値が異なります。",
+    source: "セイコーエコロジア「オンシツコナジラミの対策と予防」（京都大学農学部昆虫学研究室の知見を引用）"
+  },
+  armyworm: {
+    name: "ヨトウムシ類（ハスモンヨトウ）",
+    type: "insect",
+    baseTemp: 10.3,
+    dd: 526,
+    note: "ハスモンヨトウの産卵〜羽化の発育零点10.3℃・有効積算温量526.3日度（Miyashita, 1971）を用いています。同種で628日度とする推定例や、シロイチモジヨトウ等の近縁種では値が異なる報告もあります。",
+    source: "農林水産省 気候変動影響評価資料／東アジア「ハスモンヨトウの海を越えた移動」（植物防疫協会）"
+  },
+  mite: {
+    name: "ハダニ類（ナミハダニ）",
+    type: "insect",
+    baseTemp: 10.0,
+    dd: 180,
+    note: "ナミハダニの発育零点は10℃、卵から産卵開始までの有効積算温度は179.8日度と報告されています（内田, 1982）。カンザワハダニ等、他種では値が異なります。",
+    source: "農林水産省 気候変動影響評価資料"
+  },
+  diamondback: {
+    name: "コナガ",
+    type: "insect",
+    baseTemp: 8.5,
+    dd: 270,
+    note: "発育零点は約7.4〜9.5℃、卵〜成虫の有効積算温度は個体群により229〜313日度と地理的な差が報告されています。ここでは目安として発育零点8.5℃・有効積算温度270日度（公表値の中間的な目安）を用いています。",
+    source: "日本応用動物昆虫学会誌「コナガの発育零点と発育有効積算温量」／カクイチ農業メディア「積算温度の活用法」"
+  },
+  powdery: {
+    name: "うどんこ病",
+    type: "disease",
+    tempMin: 17, tempMax: 25, wantRain: false,
+    note: "うどんこ病菌は比較的低湿度・冷涼な条件（おおむね17〜25℃、無降雨）で発生しやすいとされています（イチゴうどんこ病の発病適温は20℃前後）。多湿環境の施設内などでも発生することがあるため、あくまで目安としてご利用ください。",
+    source: "茨城県病害虫防除所資料／各種病害虫辞典"
+  },
+  graymold: {
+    name: "灰色かび病",
+    type: "disease",
+    tempMin: 15, tempMax: 20, wantRain: true,
+    note: "灰色かび病菌は冷涼で多湿な条件（おおむね15〜20℃、降雨・多湿）で発生しやすいとされています。",
+    source: "各種病害虫防除資料"
+  },
+  downy: {
+    name: "べと病",
+    type: "disease",
+    tempMin: 15, tempMax: 24, wantRain: true,
+    note: "べと病菌は冷涼多湿な条件（おおむね15〜24℃、降雨・多湿）で発生しやすいとされています。",
+    source: "各種病害虫防除資料"
+  },
+  blight: {
+    name: "疫病",
+    type: "disease",
+    tempMin: 15, tempMax: 24, wantRain: true,
+    note: "疫病菌は冷涼多湿な条件（おおむね15〜24℃、降雨・多湿）で発生・まん延しやすいとされています。",
+    source: "各種病害虫防除資料"
+  },
+  blast: {
+    name: "いもち病（葉いもち）",
+    type: "blast",
+    note: "正式な感染好適条件判定（BLASTAM）は「葉の濡れ時間が8〜10時間以上」かつ「濡れている間の気温15〜25℃」かつ「判定日前5日間の平均気温20〜25℃」です。本ツールでは葉の濡れ時間の代わりに日降水量1mm以上を『濡れ日』の目安として簡易的に判定しています。正式な判定とは異なりますので、あくまで参考としてください。",
+    source: "高知県病害虫防除所／JA上伊那／京都府病害虫防除所 BLASTAM関連資料"
+  }
+};
+
+/* ▼ 作物データ中の病害虫名（部分一致）→ MODEL_LIBRARY のキー
+      配列の先頭側ほど優先して判定される（より具体的な名称を先に置く） */
+const MATCH_RULES = [
+  ["オオタバコガ", "tabakoga"],
+  ["コナジラミ", "whitefly"],
+  ["アザミウマ", "thrips"],
+  ["ハスモンヨトウ", "armyworm"],
+  ["ヨトウムシ", "armyworm"],
+  ["コナガ", "diamondback"],
+  ["ハダニ", "mite"],
+  ["カメムシ", "stinkbug"],
+  ["アブラムシ", "aphid"],
+  ["いもち病", "blast"],
+  ["うどんこ病", "powdery"],
+  ["灰色かび病", "graymold"],
+  ["べと病", "downy"],
+  ["疫病", "blight"]
+];
+
+function matchModelForName(name) {
+  for (const [keyword, modelId] of MATCH_RULES) {
+    if (name.includes(keyword)) return modelId;
+  }
+  return null;
+}
+
+/* ▼ グラフタイトルに付記する地名（取得できていれば「｜地名」、できていなければ空文字） */
+function locationTitleSuffix() {
+  if (currentPlaceName) return `｜${currentPlaceName}`;
+  if (lat && lon) return `｜${lat}, ${lon}`;
+  return "";
+}
+
+let pestChartInstance = null;
+let pestResultData = null;
+
+/* ▼ 作物プルダウンの初期化 */
+function populateCropSelect() {
+  const sel = document.getElementById("crop-select");
+  CROP_DATA.forEach(c => {
+    const opt = document.createElement("option");
+    opt.value = c.id;
+    opt.textContent = `${c.name_ja}（${c.category}）`;
+    sel.appendChild(opt);
+  });
+  onCropChange();
+}
+
+/* ▼ 作物選択に応じて、対象の病害虫プルダウンを更新する
+      （crops_InsectPests.json の main_pests / main_diseases をそのまま列挙し、
+        末尾にカスタム入力欄を追加する） */
+function onCropChange() {
+  const cropId = document.getElementById("crop-select").value;
+  const crop = CROP_DATA.find(c => c.id === cropId);
+  const sel = document.getElementById("target-select");
+  sel.innerHTML = "";
+
+  crop.main_pests.forEach(name => {
+    const opt = document.createElement("option");
+    opt.value = "pest::" + name;
+    opt.textContent = "🐛 " + name;
+    sel.appendChild(opt);
+  });
+  crop.main_diseases.forEach(name => {
+    const opt = document.createElement("option");
+    opt.value = "disease::" + name;
+    opt.textContent = "🦠 " + name;
+    sel.appendChild(opt);
+  });
+  const customOpt = document.createElement("option");
+  customOpt.value = "custom::カスタム入力";
+  customOpt.textContent = "🔧 カスタム（発育零点・有効積算温度を入力）";
+  sel.appendChild(customOpt);
+
+  onTargetChange();
+}
+
+/* ▼ 病害虫選択に応じて、モデル情報表示とカスタム入力欄の表示を更新する */
+function onTargetChange() {
+  const val = document.getElementById("target-select").value;
+  const sep = val.indexOf("::");
+  const kind = val.slice(0, sep);
+  const rawName = val.slice(sep + 2);
+
+  const infoDiv = document.getElementById("target-model-info");
+  const customDiv = document.getElementById("custom-inputs");
+
+  if (kind === "custom") {
+    customDiv.style.display = "block";
+    document.getElementById("custom-basetemp").value = 10;
+    document.getElementById("custom-dd").value = 200;
+    infoDiv.innerHTML = "お手元の都道府県病害虫防除所資料などで公表されている発育零点・有効積算温度の値を、下欄に入力してご利用ください。";
+    return;
+  }
+
+  const modelId = matchModelForName(rawName);
+  if (!modelId) {
+    customDiv.style.display = "block";
+    document.getElementById("custom-basetemp").value = "";
+    document.getElementById("custom-dd").value = "";
+    infoDiv.innerHTML =
+      `<b>${rawName}</b> に対応する発育零点・有効積算温度、または発生気象条件のデータは、現時点で当ツールには登録されていません。<br>` +
+      `お手元の都道府県病害虫防除所資料などに発育零点・有効積算温度の記載があれば、下欄に入力することで積算計算をご利用いただけます` +
+      `（気象条件による病害モデルのカスタム入力には対応していません）。`;
+    return;
+  }
+
+  const model = MODEL_LIBRARY[modelId];
+  customDiv.style.display = "none";
+  let html = `<b>${rawName}</b>　→　参照モデル：${model.name}<br>`;
+  if (model.type === "insect") {
+    html += `発育零点：${model.baseTemp}℃　有効積算温度：${model.dd}日度／世代<br>`;
+  } else if (model.type === "disease") {
+    html += `発生しやすい目安条件：日平均気温 ${model.tempMin}〜${model.tempMax}℃　かつ　${model.wantRain ? "降雨あり（多湿）" : "無降雨（乾燥）"}<br>`;
+  } else if (model.type === "blast") {
+    html += `感染好適条件（簡易判定）：日平均気温15〜25℃　かつ　日降水量1mm以上　かつ　直近5日間平均気温20〜25℃<br>`;
+  }
+  html += `<span style="color:#777;">${model.note}<br>出典：${model.source}</span>`;
+  infoDiv.innerHTML = html;
+}
+
+/* ▼ 現在選択中の対象について、実行に使うモデル（種別・パラメータ・出典等）を確定する */
+function getActiveModel() {
+  const val = document.getElementById("target-select").value;
+  const sep = val.indexOf("::");
+  const kind = val.slice(0, sep);
+  const rawName = val.slice(sep + 2);
+
+  if (kind === "custom") {
+    const baseTemp = Number(document.getElementById("custom-basetemp").value);
+    const dd = Number(document.getElementById("custom-dd").value);
+    if (!Number.isFinite(baseTemp) || !Number.isFinite(dd) || dd <= 0) {
+      throw new Error("カスタムの発育零点・有効積算温度には数値を入力してください。");
+    }
+    return {
+      displayName: "カスタム入力の対象害虫",
+      type: "insect", baseTemp, dd,
+      note: "利用者が入力したカスタム値です。", source: "利用者入力値"
+    };
+  }
+
+  const modelId = matchModelForName(rawName);
+  if (!modelId) {
+    const baseTemp = Number(document.getElementById("custom-basetemp").value);
+    const dd = Number(document.getElementById("custom-dd").value);
+    if (Number.isFinite(baseTemp) && Number.isFinite(dd) && dd > 0) {
+      return {
+        displayName: rawName,
+        type: "insect", baseTemp, dd,
+        note: "モデル未登録のため、利用者が入力した発育零点・有効積算温度を使用しています。",
+        source: "利用者入力値"
+      };
+    }
+    throw new Error(`「${rawName}」に対応するデータが登録されていません。カスタム欄に発育零点・有効積算温度を入力してください。`);
+  }
+
+  return Object.assign({ displayName: rawName }, MODEL_LIBRARY[modelId]);
+}
+
+async function runForecast() {
+  const cropId = document.getElementById("crop-select").value;
+  const crop = CROP_DATA.find(c => c.id === cropId);
+  const startDate = document.getElementById("pest-start-date").value;
+  const endDate = getJSTDateString(new Date(), 90);
+
+  if (!lat || !lon) { alert("現在地が取得できていません。位置情報を許可するか、緯度・経度を手動で入力してください。"); return; }
+  if (!startDate) { alert("起算日／集計開始日を選択してください。"); return; }
+  if (startDate > endDate) { alert("開始日は集計終了日（本日+90日）より前の日付を指定してください。"); return; }
+
+  const info = document.getElementById("pest-info");
+  info.style.display = "block";
+  info.innerHTML = '<div class="loading-box">📥 気象データを取得し、発生予察を計算しています…</div>';
+  document.getElementById("pest-chart-toolbar").style.display = "none";
+  document.getElementById("pest-chart-wrapper").style.display = "none";
+  document.getElementById("pest-refs").style.display = "none";
+
+  try {
+    const model = getActiveModel();
+    const { series, dates } = await fetchPestWeatherSeries(startDate, endDate);
+
+    if (model.type === "insect") {
+      renderInsectChart(crop.name_ja, model, series, dates, startDate, endDate);
+    } else if (model.type === "disease") {
+      renderDiseaseChart(crop.name_ja, model, series, dates, startDate, endDate);
+    } else if (model.type === "blast") {
+      renderBlastChart(crop.name_ja, model, series, dates, startDate, endDate);
+    }
+  } catch (err) {
+    console.error(err);
+    info.innerHTML = `<div class="loading-box"><b>発生予察の計算に失敗しました。</b><br>${err.message || err}</div>`;
+  }
+}
+
+/* ▼ 開始日〜終了日の日別気象データ（気温平均・降水量）を取得する。
+      本日−92日より前の過去日は archive-api の実測値、直近92日〜+16日は forecast-api、
+      本日+16日より先の未来日は過去5年の同日平均値で補完する。 */
+async function fetchPestWeatherSeries(startDate, endDate) {
+  const today = getJSTDateString();
+  const forecastPastLimit = addJSTDays(today, -92);
+
+  const forecastUrl =
+    `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
+    `&daily=temperature_2m_mean,precipitation_sum` +
+    `&past_days=92&forecast_days=16&timezone=${PHOTEOSYNC_TIMEZONE}`;
+  const forecastData = await fetchOpenMeteoJSON(forecastUrl);
+
+  const actualByDate = {};
+  if (forecastData.daily && forecastData.daily.time) {
+    for (let i = 0; i < forecastData.daily.time.length; i++) {
+      actualByDate[forecastData.daily.time[i]] = {
+        mean: forecastData.daily.temperature_2m_mean[i],
+        rain: forecastData.daily.precipitation_sum[i]
+      };
+    }
+  }
+
+  if (startDate < forecastPastLimit) {
+    const archiveEnd = addJSTDays(forecastPastLimit, -1);
+    if (startDate <= archiveEnd) {
+      const archiveUrl =
+        `${OPEN_METEO_ARCHIVE_URL}?latitude=${lat}&longitude=${lon}` +
+        `&start_date=${startDate}&end_date=${archiveEnd}` +
+        `&daily=temperature_2m_mean,precipitation_sum&timezone=${PHOTEOSYNC_TIMEZONE}`;
+      const archData = await fetchOpenMeteoJSON(archiveUrl);
+      if (archData.daily && archData.daily.time) {
+        for (let i = 0; i < archData.daily.time.length; i++) {
+          if (!actualByDate[archData.daily.time[i]]) {
+            actualByDate[archData.daily.time[i]] = {
+              mean: archData.daily.temperature_2m_mean[i],
+              rain: archData.daily.precipitation_sum[i]
+            };
+          }
+        }
+      }
+    }
+  }
+
+  const allDates = [];
+  for (let d = startDate; d <= endDate; d = addJSTDays(d, 1)) allDates.push(d);
+
+  const needsFallback = allDates.some(d => {
+    const a = actualByDate[d];
+    return !a || !Number.isFinite(a.mean);
+  });
+
+  let avgByMonthDay = {};
+  if (needsFallback) {
+    const [ey] = today.split("-").map(Number);
+    const archStart = `${ey - 5}-01-01`;
+    const archiveUrl =
+      `${OPEN_METEO_ARCHIVE_URL}?latitude=${lat}&longitude=${lon}` +
+      `&start_date=${archStart}&end_date=${today}` +
+      `&daily=temperature_2m_mean,precipitation_sum&timezone=${PHOTEOSYNC_TIMEZONE}`;
+    const archData = await fetchOpenMeteoJSON(archiveUrl);
+    if (archData.daily && archData.daily.time) {
+      const sums = {};
+      for (let i = 0; i < archData.daily.time.length; i++) {
+        const md = archData.daily.time[i].slice(5);
+        if (!sums[md]) sums[md] = { meanSum: 0, meanCount: 0, rainSum: 0, rainCount: 0 };
+        const mv = archData.daily.temperature_2m_mean[i], rv = archData.daily.precipitation_sum[i];
+        if (Number.isFinite(mv)) { sums[md].meanSum += mv; sums[md].meanCount++; }
+        if (Number.isFinite(rv)) { sums[md].rainSum += rv; sums[md].rainCount++; }
+      }
+      for (const md in sums) {
+        const s = sums[md];
+        avgByMonthDay[md] = {
+          mean: s.meanCount ? s.meanSum / s.meanCount : null,
+          rain: s.rainCount ? s.rainSum / s.rainCount : null
+        };
+      }
+    }
+  }
+
+  const series = {};
+  allDates.forEach(dateStr => {
+    const a = actualByDate[dateStr];
+    const useActual = a && Number.isFinite(a.mean);
+    if (useActual) {
+      series[dateStr] = { mean: a.mean, rain: Number.isFinite(a.rain) ? a.rain : 0, estimated: false };
+    } else {
+      const md = dateStr.slice(5);
+      const avg = avgByMonthDay[md] || {};
+      series[dateStr] = { mean: Number.isFinite(avg.mean) ? avg.mean : 0, rain: Number.isFinite(avg.rain) ? avg.rain : 0, estimated: true };
+    }
+  });
+
+  return { series, dates: allDates };
+}
+
+/* ▼ 昆虫（積算温度モデル）の発生予察グラフを描画する */
+function renderInsectChart(cropName, model, series, dates, startDate, endDate) {
+  let cum = 0;
+  const cumArr = [];
+  const gens = [];
+  let nextGenIndex = 1;
+  dates.forEach(d => {
+    const eff = Math.max(0, series[d].mean - model.baseTemp);
+    cum += eff;
+    cumArr.push(cum);
+    while (cum >= model.dd * nextGenIndex) {
+      gens.push({ gen: nextGenIndex, date: d });
+      nextGenIndex++;
+    }
+  });
+
+  const maxGenShown = Math.min(Math.max(nextGenIndex, 1), 6);
+  const dispLabels = dates.map(d => `${d.slice(5, 7)}/${d.slice(8, 10)}`);
+  const genColors = ["#e53935", "#fb8c00", "#8e24aa", "#3949ab", "#00897b", "#6d4c41"];
+
+  const datasets = [
+    { label: "積算有効温度（日度）", data: cumArr, borderColor: "#2e7d32", backgroundColor: "transparent", pointRadius: 0, borderWidth: 2 }
+  ];
+  for (let g = 1; g <= maxGenShown; g++) {
+    datasets.push({
+      label: `第${g}世代 閾値（${(model.dd * g).toFixed(0)}日度）`,
+      data: dates.map(() => model.dd * g),
+      borderColor: genColors[(g - 1) % genColors.length],
+      borderDash: [6, 4], borderWidth: 1, pointRadius: 0, backgroundColor: "transparent"
+    });
+  }
+
+  document.getElementById("pest-chart-wrapper").style.display = "block";
+  document.getElementById("pest-chart-toolbar").style.display = "flex";
+  const chartInner = document.getElementById("pest-chart-inner");
+  const chartWrapper = chartInner.parentElement;
+  chartInner.style.width = Math.max(chartWrapper.clientWidth, dates.length * 6) + "px";
+
+  if (pestChartInstance) pestChartInstance.destroy();
+  pestChartInstance = new Chart(document.getElementById("pest-chart"), {
+    type: "line",
+    data: { labels: dispLabels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        title: { display: true, text: `${cropName}：${model.displayName}　積算有効温度（起算日: ${startDate}）${locationTitleSuffix()}`, font: { size: 15 }, padding: { top: 4, bottom: 12 } },
+        tooltip: { mode: "index", intersect: false }
+      },
+      hover: { mode: "index", intersect: false },
+      scales: {
+        y: { type: "linear", position: "left", title: { display: true, text: "積算有効温度（日度）" } },
+        x: { title: { display: true, text: "日付" } }
+      }
+    }
+  });
+
+  pestResultData = { type: "insect", cropName, model, dates, series, startDate, endDate };
+
+  const info = document.getElementById("pest-info");
+  info.style.display = "block";
+  const genText = gens.length
+    ? gens.map(g => `第${g.gen}世代 到達目安：${isoToJapanese(g.date)}`).join("<br>")
+    : "選択期間内には閾値に到達しませんでした。";
+  info.innerHTML = `📅 起算日：${startDate}　集計終了日：${endDate}（本日+90日）<br>発育零点：${model.baseTemp}℃　有効積算温度：${model.dd}日度／世代<br><br>${genText}<br><span style="font-size:.75rem;color:#777;">※ 実測・予報データが無い期間は、過去5年の同日平均値で補完しています。発生時期はあくまで目安です。</span>`;
+
+  renderRefs(model);
+}
+
+/* ▼ 病害（気象条件モデル）の発生好適日グラフを描画する */
+function renderDiseaseChart(cropName, model, series, dates, startDate, endDate) {
+  const flags = [];
+  const temps = [];
+  const riskDates = [];
+  dates.forEach(d => {
+    const v = series[d];
+    temps.push(v.mean);
+    const tempOK = v.mean >= model.tempMin && v.mean <= model.tempMax;
+    const rainOK = model.wantRain ? v.rain >= 1 : v.rain < 1;
+    const flag = tempOK && rainOK;
+    flags.push(flag ? 1 : 0);
+    if (flag) riskDates.push(d);
+  });
+
+  renderRiskChart(cropName, `${model.displayName}　発生条件チェック`, "発生好適日", flags, temps, dates, startDate, endDate);
+
+  pestResultData = { type: "disease", cropName, model, dates, series, flags, startDate, endDate };
+
+  const info = document.getElementById("pest-info");
+  info.style.display = "block";
+  const listHtml = riskDates.length
+    ? riskDates.slice(0, 15).map(isoToJapanese).join("、") + (riskDates.length > 15 ? ` ほか${riskDates.length - 15}日` : "")
+    : "該当日はありませんでした。";
+  info.innerHTML = `📅 集計期間：${startDate}〜${endDate}<br>発生好適日数：${riskDates.length}日／${dates.length}日<br>該当日：${listHtml}<br><span style="font-size:.75rem;color:#777;">※ 実測・予報データが無い期間は、過去5年の同日平均値で補完しています。簡易的な気象条件による目安であり、実際の発生を保証するものではありません。</span>`;
+
+  renderRefs(model);
+}
+
+/* ▼ いもち病（葉いもち・簡易BLASTAM）の感染好適日グラフを描画する */
+function renderBlastChart(cropName, model, series, dates, startDate, endDate) {
+  const means = dates.map(d => series[d].mean);
+  const flags = [];
+  const riskDates = [];
+  dates.forEach((d, i) => {
+    const v = series[d];
+    const windowVals = means.slice(Math.max(0, i - 4), i + 1);
+    const avg5 = windowVals.reduce((a, b) => a + b, 0) / windowVals.length;
+    const wetOK = v.rain >= 1;
+    const dayTempOK = v.mean >= 15 && v.mean <= 25;
+    const avg5OK = avg5 >= 20 && avg5 <= 25;
+    const flag = wetOK && dayTempOK && avg5OK;
+    flags.push(flag ? 1 : 0);
+    if (flag) riskDates.push(d);
+  });
+
+  renderRiskChart(cropName, `${model.displayName}　感染好適日チェック（簡易判定）`, "感染好適日", flags, means, dates, startDate, endDate);
+
+  pestResultData = { type: "blast", cropName, model, dates, series, flags, startDate, endDate };
+
+  const info = document.getElementById("pest-info");
+  info.style.display = "block";
+  const listHtml = riskDates.length
+    ? riskDates.slice(0, 15).map(isoToJapanese).join("、") + (riskDates.length > 15 ? ` ほか${riskDates.length - 15}日` : "")
+    : "該当日はありませんでした。";
+  info.innerHTML = `📅 集計期間：${startDate}〜${endDate}<br>感染好適日数（簡易判定）：${riskDates.length}日／${dates.length}日<br>好適条件が広域・連続して現れた場合、通常その1〜2週間後に葉いもちの発生が確認されやすいとされています。<br>該当日：${listHtml}<br><span style="font-size:.75rem;color:#777;">※ 日降水量1mm以上を「葉の濡れ」の代用としており、正式なBLASTAM判定（葉面湿潤時間の実測）とは異なる簡易指標です。必ずお住まいの都道府県病害虫防除所の発生予察情報もご確認ください。</span>`;
+
+  renderRefs(model);
+}
+
+/* ▼ 病害系（disease/blast）共通：好適日フラグ＋気温の複合グラフを描画する */
+function renderRiskChart(cropName, titleSuffix, flagLabel, flags, temps, dates, startDate, endDate) {
+  const dispLabels = dates.map(d => `${d.slice(5, 7)}/${d.slice(8, 10)}`);
+
+  document.getElementById("pest-chart-wrapper").style.display = "block";
+  document.getElementById("pest-chart-toolbar").style.display = "flex";
+  const chartInner = document.getElementById("pest-chart-inner");
+  const chartWrapper = chartInner.parentElement;
+  chartInner.style.width = Math.max(chartWrapper.clientWidth, dates.length * 6) + "px";
+
+  if (pestChartInstance) pestChartInstance.destroy();
+  pestChartInstance = new Chart(document.getElementById("pest-chart"), {
+    data: {
+      labels: dispLabels,
+      datasets: [
+        { type: "bar", label: flagLabel, data: flags, backgroundColor: "rgba(229,57,53,0.6)", yAxisID: "y1" },
+        { type: "line", label: "日平均気温 (℃)", data: temps, borderColor: "green", backgroundColor: "transparent", pointRadius: 0, borderWidth: 2, yAxisID: "y" }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        title: { display: true, text: `${cropName}：${titleSuffix}（${startDate}〜${endDate}）${locationTitleSuffix()}`, font: { size: 15 }, padding: { top: 4, bottom: 12 } },
+        tooltip: { mode: "index", intersect: false }
+      },
+      hover: { mode: "index", intersect: false },
+      scales: {
+        y: { type: "linear", position: "left", title: { display: true, text: "日平均気温 (℃)" } },
+        y1: { type: "linear", position: "right", min: 0, max: 1, ticks: { stepSize: 1, callback: v => v === 1 ? "該当" : "—" }, title: { display: true, text: flagLabel }, grid: { drawOnChartArea: false } },
+        x: { title: { display: true, text: "日付" } }
+      }
+    }
+  });
+}
+
+/* ▼ 出典・参考情報の表示 */
+function renderRefs(model) {
+  const refs = document.getElementById("pest-refs");
+  refs.style.display = "block";
+  refs.innerHTML = `<b>出典・参考：</b>${model.source}<br>${model.note}<br>実際の防除の判断は、必ずお住まいの都道府県病害虫防除所が発表する「病害虫発生予察情報」もあわせてご確認ください。`;
+}
+
+/* ▼ 病害虫予察データをCSVとしてダウンロード */
+function exportPestCSV() {
+  if (!pestResultData) { alert("先に発生予察を実行してください。"); return; }
+  const { type, cropName, model, dates, series, startDate, endDate } = pestResultData;
+  let rows;
+  if (type === "insect") {
+    rows = [["日付", "日平均気温(℃)", "有効温度(日度)", "積算有効温度(日度)", "備考"]];
+    let cum = 0;
+    dates.forEach(d => {
+      const eff = Math.max(0, series[d].mean - model.baseTemp);
+      cum += eff;
+      rows.push([d, series[d].mean.toFixed(1), eff.toFixed(2), cum.toFixed(2), series[d].estimated ? "過去5年平均で補完" : "実測/予報"]);
+    });
+  } else {
+    rows = [["日付", "日平均気温(℃)", "日降水量(mm)", "該当有無", "備考"]];
+    dates.forEach((d, i) => {
+      rows.push([d, series[d].mean.toFixed(1), series[d].rain.toFixed(1), pestResultData.flags[i] ? "該当" : "", series[d].estimated ? "過去5年平均で補完" : "実測/予報"]);
+    });
+  }
+  const prefix = `photeosync_pest_${cropName}_${model.displayName}`.replace(/[\s\/（）()]/g, "_");
+  downloadCSV(rows, prefix, startDate, endDate);
+}
+
+/* ▼ 病害虫予察グラフをPNG画像としてダウンロード */
+function exportPestPNG() {
+  if (!pestChartInstance || !pestResultData) { alert("ダウンロードできるグラフがありません。"); return; }
+  const { cropName, model, startDate, endDate } = pestResultData;
+  const filename = `photeosync_pest_${cropName}_${model.displayName}_${startDate}_${endDate}.png`.replace(/[\s\/（）()]/g, "_");
+  exportCanvasAsPngWithWatermark(pestChartInstance.canvas, filename);
+}
+
+/* ==========================================================================
+   初期化
+   ========================================================================== */
+(function init() {
+  populateCropSelect();
+  const endDate = getJSTDateString(new Date(), 90);
+  const minDate = getJSTDateString(new Date(), -365);
+  const input = document.getElementById("pest-start-date");
+  input.value = getJSTDateString(new Date(), -30);
+  input.min = minDate;
+  input.max = endDate;
+})();
+</script>
+</body>
+</html>

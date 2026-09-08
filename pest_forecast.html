@@ -143,7 +143,7 @@
 <div class="main-wrapper">
   <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; flex-wrap:wrap;">
     <a href="index.html" class="toggle-btn" style="text-decoration:none; color:inherit;">← PhoteoSyncに戻る</a>
-    <a href="pest_forecast.md" target="_blank" rel="noopener" class="toggle-btn" style="text-decoration:none; color:inherit;">📖 説明書</a>
+    <a href="https://github.com/y-ookuma/PhoteoSync/blob/main/pest_forecast.md" target="_blank" rel="noopener" class="toggle-btn" style="text-decoration:none; color:inherit;">📖 説明書</a>
   </div>
   <h2>🐛 病害虫発生予察（PhoteoSync）</h2>
 
@@ -981,6 +981,25 @@ function evaluateRadiationDeficit(model, series, dates, i) {
   return (ratioSum / count) < ratioThreshold;
 }
 
+/* ▼ 日照不足判定に使っている「直近N日平均の日射量平年比(%)」を、
+      グラフ表示用に日付ごとの系列として計算する（radDeficitが無いモデルではnull） */
+function computeRadiationRatioSeries(model, series, dates) {
+  if (!model.radDeficit) return null;
+  const { window } = model.radDeficit;
+  return dates.map((d, i) => {
+    const startIdx = Math.max(0, i - window + 1);
+    let sum = 0, count = 0;
+    for (let k = startIdx; k <= i; k++) {
+      const v = series[dates[k]];
+      if (Number.isFinite(v.sw) && Number.isFinite(v.swAvg) && v.swAvg > 0) {
+        sum += v.sw / v.swAvg;
+        count++;
+      }
+    }
+    return count > 0 ? (sum / count) * 100 : null;
+  });
+}
+
 function renderDiseaseChart(cropName, model, series, dates, startDate, endDate) {
   const flags = [];
   const temps = [];
@@ -999,7 +1018,9 @@ function renderDiseaseChart(cropName, model, series, dates, startDate, endDate) 
   });
 
   const humidity = dates.map(d => Number.isFinite(series[d].rh) ? series[d].rh : null);
-  renderRiskChart(cropName, `${model.displayName}　発生条件チェック`, "発生好適日", flags, temps, dates, startDate, endDate, humidity);
+  const radiationRatio = computeRadiationRatioSeries(model, series, dates);
+  const radThresholdPercent = model.radDeficit ? model.radDeficit.ratioThreshold * 100 : null;
+  renderRiskChart(cropName, `${model.displayName}　発生条件チェック`, "発生好適日", flags, temps, dates, startDate, endDate, humidity, radiationRatio, radThresholdPercent);
 
   pestResultData = { type: "disease", cropName, model, dates, series, flags, startDate, endDate };
 
@@ -1056,8 +1077,8 @@ function renderBlastChart(cropName, model, series, dates, startDate, endDate) {
   renderRefs(model);
 }
 
-/* ▼ 病害系（disease/blast）共通：好適日フラグ＋気温＋湿度の複合グラフを描画する */
-function renderRiskChart(cropName, titleSuffix, flagLabel, flags, temps, dates, startDate, endDate, humidity) {
+/* ▼ 病害系（disease/blast）共通：好適日フラグ＋気温＋湿度（＋日照比率）の複合グラフを描画する */
+function renderRiskChart(cropName, titleSuffix, flagLabel, flags, temps, dates, startDate, endDate, humidity, radiationRatio, radThresholdPercent) {
   const dispLabels = dates.map(d => `${d.slice(5, 7)}/${d.slice(8, 10)}`);
 
   document.getElementById("pest-chart-wrapper").style.display = "block";
@@ -1073,6 +1094,12 @@ function renderRiskChart(cropName, titleSuffix, flagLabel, flags, temps, dates, 
   if (humidity) {
     datasets.push({ type: "line", label: "日平均相対湿度 (%)", data: humidity, borderColor: "#1565c0", backgroundColor: "transparent", pointRadius: 0, borderWidth: 2, borderDash: [4, 3], yAxisID: "y2" });
   }
+  if (radiationRatio) {
+    datasets.push({ type: "line", label: "日射量 平年比（直近3日平均, %）", data: radiationRatio, borderColor: "#f9a825", backgroundColor: "transparent", pointRadius: 0, borderWidth: 2, yAxisID: "y3", spanGaps: true });
+    if (Number.isFinite(radThresholdPercent)) {
+      datasets.push({ type: "line", label: `日照不足の目安（平年比${radThresholdPercent}%）`, data: dates.map(() => radThresholdPercent), borderColor: "#bdbdbd", borderDash: [3, 3], borderWidth: 1, pointRadius: 0, backgroundColor: "transparent", yAxisID: "y3" });
+    }
+  }
 
   if (pestChartInstance) pestChartInstance.destroy();
   pestChartInstance = new Chart(document.getElementById("pest-chart"), {
@@ -1087,6 +1114,7 @@ function renderRiskChart(cropName, titleSuffix, flagLabel, flags, temps, dates, 
       scales: {
         y: { type: "linear", position: "left", title: { display: true, text: "日平均気温 (℃)" } },
         y2: { type: "linear", position: "left", min: 0, max: 100, title: { display: true, text: "相対湿度 (%)" }, grid: { drawOnChartArea: false }, display: !!humidity },
+        y3: { type: "linear", position: "right", min: 0, max: 150, title: { display: true, text: "日射量 平年比 (%)" }, grid: { drawOnChartArea: false }, display: !!radiationRatio },
         y1: { type: "linear", position: "right", min: 0, max: 1, ticks: { stepSize: 1, callback: v => v === 1 ? "該当" : "—" }, title: { display: true, text: flagLabel }, grid: { drawOnChartArea: false } },
         x: { title: { display: true, text: "日付" } }
       }

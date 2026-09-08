@@ -141,7 +141,10 @@
 <body>
 
 <div class="main-wrapper">
-  <a href="index.html" class="toggle-btn" style="text-decoration:none; color:inherit;">← PhoteoSyncに戻る</a>
+  <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; flex-wrap:wrap;">
+    <a href="index.html" class="toggle-btn" style="text-decoration:none; color:inherit;">← PhoteoSyncに戻る</a>
+    <a href="pest_forecast.md" target="_blank" rel="noopener" class="toggle-btn" style="text-decoration:none; color:inherit;">📖 説明書</a>
+  </div>
   <h2>🐛 病害虫発生予察（PhoteoSync）</h2>
 
   <div id="location-box">
@@ -516,35 +519,36 @@ const MODEL_LIBRARY = {
   powdery: {
     name: "うどんこ病",
     type: "disease",
-    tempMin: 17, tempMax: 25, wantRain: false,
-    note: "うどんこ病菌は比較的低湿度・冷涼な条件（おおむね17〜25℃、無降雨）で発生しやすいとされています（イチゴうどんこ病の発病適温は20℃前後）。多湿環境の施設内などでも発生することがあるため、あくまで目安としてご利用ください。",
+    tempMin: 17, tempMax: 25, rhMax: 70,
+    note: "うどんこ病菌は他の多くの糸状菌病と異なり、多湿でなくてもよく発生し、比較的低い湿度（目安：日平均相対湿度70%以下）でも感染・発病しやすいとされています（イチゴうどんこ病の発病適温は20℃前後）。降雨が続くと胞子が洗い流されて発生が抑えられる一方、乾燥注意報が出るような晴天が続くと多発しやすくなります。",
     source: "茨城県病害虫防除所資料／各種病害虫辞典"
   },
   graymold: {
     name: "灰色かび病",
     type: "disease",
-    tempMin: 15, tempMax: 20, wantRain: true,
-    note: "灰色かび病菌は冷涼で多湿な条件（おおむね15〜20℃、降雨・多湿）で発生しやすいとされています。",
-    source: "各種病害虫防除資料"
+    tempMin: 15, tempMax: 20, rhMin: 85,
+    radDeficit: { window: 3, ratioThreshold: 0.7 },
+    note: "灰色かび病菌は冷涼で多湿な条件（おおむね15〜20℃、目安：日平均相対湿度85%以上）に加え、「日照不足（曇天・長雨）が続く」ことが発生を助長するとされています。本ツールでは、直近3日間平均の日射量が平年値（過去5年の同日平均）のおおむね7割未満のとき「日照不足」とみなし、気温・湿度条件とあわせて判定しています。",
+    source: "茨城県「施設野菜共通-灰色カビ病」病害虫防除資料／セイコーエコロジア「灰色カビ病の原因とは？発生条件と感染の仕組みを解説」ほか"
   },
   downy: {
     name: "べと病",
     type: "disease",
-    tempMin: 15, tempMax: 24, wantRain: true,
-    note: "べと病菌は冷涼多湿な条件（おおむね15〜24℃、降雨・多湿）で発生しやすいとされています。",
+    tempMin: 15, tempMax: 24, rhMin: 85,
+    note: "べと病菌は冷涼多湿な条件（おおむね15〜24℃、目安：日平均相対湿度85%以上）で発生しやすいとされています。",
     source: "各種病害虫防除資料"
   },
   blight: {
     name: "疫病",
     type: "disease",
-    tempMin: 15, tempMax: 24, wantRain: true,
-    note: "疫病菌は冷涼多湿な条件（おおむね15〜24℃、降雨・多湿）で発生・まん延しやすいとされています。",
+    tempMin: 15, tempMax: 24, rhMin: 85,
+    note: "疫病菌は冷涼多湿な条件（おおむね15〜24℃、目安：日平均相対湿度85%以上）で発生・まん延しやすいとされています。",
     source: "各種病害虫防除資料"
   },
   blast: {
     name: "いもち病（葉いもち）",
     type: "blast",
-    note: "正式な感染好適条件判定（BLASTAM）は「葉の濡れ時間が8〜10時間以上」かつ「濡れている間の気温15〜25℃」かつ「判定日前5日間の平均気温20〜25℃」です。本ツールでは葉の濡れ時間の代わりに日降水量1mm以上を『濡れ日』の目安として簡易的に判定しています。正式な判定とは異なりますので、あくまで参考としてください。",
+    note: "正式な感染好適条件判定（BLASTAM）は「葉の濡れ時間が8〜10時間以上」かつ「濡れている間の気温15〜25℃」かつ「判定日前5日間の平均気温20〜25℃」です。本ツールでは葉の濡れ時間の代わりに、日平均相対湿度90%以上を『濡れ日』の目安として簡易的に判定しています（降水量よりも相対湿度の方が、葉面が湿った状態にどれだけ近いかをより直接的に反映すると考えられるため採用しています）。正式な判定とは異なりますので、あくまで参考としてください。",
     source: "高知県病害虫防除所／JA上伊那／京都府病害虫防除所 BLASTAM関連資料"
   }
 };
@@ -573,6 +577,13 @@ function matchModelForName(name) {
     if (name.includes(keyword)) return modelId;
   }
   return null;
+}
+
+/* ▼ 病害モデルの湿度条件を説明文にする */
+function formatRhCondition(model) {
+  if (Number.isFinite(model.rhMin)) return `日平均相対湿度${model.rhMin}%以上（多湿）`;
+  if (Number.isFinite(model.rhMax)) return `日平均相対湿度${model.rhMax}%以下（乾燥気味）`;
+  return "湿度条件なし";
 }
 
 /* ▼ グラフタイトルに付記する地名（取得できていれば「｜地名」、できていなければ空文字） */
@@ -662,7 +673,7 @@ function onTargetChange() {
   if (model.type === "insect") {
     html += `発育零点：${model.baseTemp}℃　有効積算温度：${model.dd}日度／世代<br>`;
   } else if (model.type === "disease") {
-    html += `発生しやすい目安条件：日平均気温 ${model.tempMin}〜${model.tempMax}℃　かつ　${model.wantRain ? "降雨あり（多湿）" : "無降雨（乾燥）"}<br>`;
+    html += `発生しやすい目安条件：日平均気温 ${model.tempMin}〜${model.tempMax}℃　かつ　${formatRhCondition(model)}${model.radDeficit ? `　かつ　直近${model.radDeficit.window}日間平均の日射量が平年比${Math.round(model.radDeficit.ratioThreshold * 100)}%未満（日照不足）` : ""}<br>`;
   } else if (model.type === "blast") {
     html += `感染好適条件（簡易判定）：日平均気温15〜25℃　かつ　日降水量1mm以上　かつ　直近5日間平均気温20〜25℃<br>`;
   }
@@ -727,7 +738,7 @@ async function runForecast() {
 
   try {
     const model = getActiveModel();
-    const { series, dates } = await fetchPestWeatherSeries(startDate, endDate);
+    const { series, dates } = await fetchPestWeatherSeries(startDate, endDate, !!model.radDeficit);
 
     if (model.type === "insect") {
       renderInsectChart(crop.name_ja, model, series, dates, startDate, endDate);
@@ -742,16 +753,20 @@ async function runForecast() {
   }
 }
 
-/* ▼ 開始日〜終了日の日別気象データ（気温平均・降水量）を取得する。
+/* ▼ 開始日〜終了日の日別気象データ（気温平均・降水量・湿度・日射量）を取得する。
       本日−92日より前の過去日は archive-api の実測値、直近92日〜+16日は forecast-api、
-      本日+16日より先の未来日は過去5年の同日平均値で補完する。 */
-async function fetchPestWeatherSeries(startDate, endDate) {
+      本日+16日より先の未来日は過去5年の同日平均値で補完する。
+      needClimatology が true の場合は、実測でカバーできる日についても
+      「その日の平年値（過去5年の同日平均）」を別途あわせて取得し、
+      日照不足の判定などに使えるようにする。 */
+async function fetchPestWeatherSeries(startDate, endDate, needClimatology) {
   const today = getJSTDateString();
   const forecastPastLimit = addJSTDays(today, -92);
+  const DAILY_VARS = "temperature_2m_mean,precipitation_sum,relative_humidity_2m_mean,shortwave_radiation_sum";
 
   const forecastUrl =
     `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
-    `&daily=temperature_2m_mean,precipitation_sum` +
+    `&daily=${DAILY_VARS}` +
     `&past_days=92&forecast_days=16&timezone=${PHOTEOSYNC_TIMEZONE}`;
   const forecastData = await fetchOpenMeteoJSON(forecastUrl);
 
@@ -760,7 +775,9 @@ async function fetchPestWeatherSeries(startDate, endDate) {
     for (let i = 0; i < forecastData.daily.time.length; i++) {
       actualByDate[forecastData.daily.time[i]] = {
         mean: forecastData.daily.temperature_2m_mean[i],
-        rain: forecastData.daily.precipitation_sum[i]
+        rain: forecastData.daily.precipitation_sum[i],
+        rh: forecastData.daily.relative_humidity_2m_mean ? forecastData.daily.relative_humidity_2m_mean[i] : null,
+        sw: forecastData.daily.shortwave_radiation_sum ? forecastData.daily.shortwave_radiation_sum[i] : null
       };
     }
   }
@@ -771,14 +788,16 @@ async function fetchPestWeatherSeries(startDate, endDate) {
       const archiveUrl =
         `${OPEN_METEO_ARCHIVE_URL}?latitude=${lat}&longitude=${lon}` +
         `&start_date=${startDate}&end_date=${archiveEnd}` +
-        `&daily=temperature_2m_mean,precipitation_sum&timezone=${PHOTEOSYNC_TIMEZONE}`;
+        `&daily=${DAILY_VARS}&timezone=${PHOTEOSYNC_TIMEZONE}`;
       const archData = await fetchOpenMeteoJSON(archiveUrl);
       if (archData.daily && archData.daily.time) {
         for (let i = 0; i < archData.daily.time.length; i++) {
           if (!actualByDate[archData.daily.time[i]]) {
             actualByDate[archData.daily.time[i]] = {
               mean: archData.daily.temperature_2m_mean[i],
-              rain: archData.daily.precipitation_sum[i]
+              rain: archData.daily.precipitation_sum[i],
+              rh: archData.daily.relative_humidity_2m_mean ? archData.daily.relative_humidity_2m_mean[i] : null,
+              sw: archData.daily.shortwave_radiation_sum ? archData.daily.shortwave_radiation_sum[i] : null
             };
           }
         }
@@ -794,29 +813,37 @@ async function fetchPestWeatherSeries(startDate, endDate) {
     return !a || !Number.isFinite(a.mean);
   });
 
+  /* ▼ 5年平均値（気候値）テーブル。未来日の補完だけでなく、
+        needClimatology=true の場合は「日照不足」等の平年比判定にも使う。 */
   let avgByMonthDay = {};
-  if (needsFallback) {
+  if (needsFallback || needClimatology) {
     const [ey] = today.split("-").map(Number);
     const archStart = `${ey - 5}-01-01`;
     const archiveUrl =
       `${OPEN_METEO_ARCHIVE_URL}?latitude=${lat}&longitude=${lon}` +
       `&start_date=${archStart}&end_date=${today}` +
-      `&daily=temperature_2m_mean,precipitation_sum&timezone=${PHOTEOSYNC_TIMEZONE}`;
+      `&daily=${DAILY_VARS}&timezone=${PHOTEOSYNC_TIMEZONE}`;
     const archData = await fetchOpenMeteoJSON(archiveUrl);
     if (archData.daily && archData.daily.time) {
       const sums = {};
       for (let i = 0; i < archData.daily.time.length; i++) {
         const md = archData.daily.time[i].slice(5);
-        if (!sums[md]) sums[md] = { meanSum: 0, meanCount: 0, rainSum: 0, rainCount: 0 };
+        if (!sums[md]) sums[md] = { meanSum: 0, meanCount: 0, rainSum: 0, rainCount: 0, rhSum: 0, rhCount: 0, swSum: 0, swCount: 0 };
         const mv = archData.daily.temperature_2m_mean[i], rv = archData.daily.precipitation_sum[i];
+        const hv = archData.daily.relative_humidity_2m_mean ? archData.daily.relative_humidity_2m_mean[i] : null;
+        const sv = archData.daily.shortwave_radiation_sum ? archData.daily.shortwave_radiation_sum[i] : null;
         if (Number.isFinite(mv)) { sums[md].meanSum += mv; sums[md].meanCount++; }
         if (Number.isFinite(rv)) { sums[md].rainSum += rv; sums[md].rainCount++; }
+        if (Number.isFinite(hv)) { sums[md].rhSum += hv; sums[md].rhCount++; }
+        if (Number.isFinite(sv)) { sums[md].swSum += sv; sums[md].swCount++; }
       }
       for (const md in sums) {
         const s = sums[md];
         avgByMonthDay[md] = {
           mean: s.meanCount ? s.meanSum / s.meanCount : null,
-          rain: s.rainCount ? s.rainSum / s.rainCount : null
+          rain: s.rainCount ? s.rainSum / s.rainCount : null,
+          rh: s.rhCount ? s.rhSum / s.rhCount : null,
+          sw: s.swCount ? s.swSum / s.swCount : null
         };
       }
     }
@@ -826,12 +853,26 @@ async function fetchPestWeatherSeries(startDate, endDate) {
   allDates.forEach(dateStr => {
     const a = actualByDate[dateStr];
     const useActual = a && Number.isFinite(a.mean);
+    const md = dateStr.slice(5);
+    const climatology = avgByMonthDay[md] || {};
     if (useActual) {
-      series[dateStr] = { mean: a.mean, rain: Number.isFinite(a.rain) ? a.rain : 0, estimated: false };
+      series[dateStr] = {
+        mean: a.mean,
+        rain: Number.isFinite(a.rain) ? a.rain : 0,
+        rh: Number.isFinite(a.rh) ? a.rh : null,
+        sw: Number.isFinite(a.sw) ? a.sw : null,
+        swAvg: Number.isFinite(climatology.sw) ? climatology.sw : null,
+        estimated: false
+      };
     } else {
-      const md = dateStr.slice(5);
-      const avg = avgByMonthDay[md] || {};
-      series[dateStr] = { mean: Number.isFinite(avg.mean) ? avg.mean : 0, rain: Number.isFinite(avg.rain) ? avg.rain : 0, estimated: true };
+      series[dateStr] = {
+        mean: Number.isFinite(climatology.mean) ? climatology.mean : 0,
+        rain: Number.isFinite(climatology.rain) ? climatology.rain : 0,
+        rh: Number.isFinite(climatology.rh) ? climatology.rh : null,
+        sw: Number.isFinite(climatology.sw) ? climatology.sw : null,
+        swAvg: Number.isFinite(climatology.sw) ? climatology.sw : null,
+        estimated: true
+      };
     }
   });
 
@@ -907,21 +948,58 @@ function renderInsectChart(cropName, model, series, dates, startDate, endDate) {
 }
 
 /* ▼ 病害（気象条件モデル）の発生好適日グラフを描画する */
+/* ▼ 病害モデルの湿度条件（rhMin/rhMax）を、その日の実測・推定湿度で判定する。
+      湿度データが取得できなかった日は、降水量の有無を代用する（フォールバック）。 */
+function evaluateRhCondition(model, v) {
+  if (Number.isFinite(v.rh)) {
+    if (Number.isFinite(model.rhMin)) return v.rh >= model.rhMin;
+    if (Number.isFinite(model.rhMax)) return v.rh <= model.rhMax;
+    return true;
+  }
+  if (Number.isFinite(model.rhMin)) return v.rain >= 1;
+  if (Number.isFinite(model.rhMax)) return v.rain < 1;
+  return true;
+}
+
+/* ▼ 「日照不足が続いているか」を、直近N日間平均の日射量が平年値（過去5年の同日平均）に
+      対してどの程度の割合かで判定する。平年値・実測値のどちらかが欠けている日は
+      判定材料が無いため、その日はカウントせず（＝日照不足の判定には使わない）。
+      比較対象の日数が1日も無い場合は判定不能として true（条件を妨げない）を返す。 */
+function evaluateRadiationDeficit(model, series, dates, i) {
+  if (!model.radDeficit) return true;
+  const { window, ratioThreshold } = model.radDeficit;
+  const startIdx = Math.max(0, i - window + 1);
+  let ratioSum = 0, count = 0;
+  for (let k = startIdx; k <= i; k++) {
+    const v = series[dates[k]];
+    if (Number.isFinite(v.sw) && Number.isFinite(v.swAvg) && v.swAvg > 0) {
+      ratioSum += v.sw / v.swAvg;
+      count++;
+    }
+  }
+  if (count === 0) return true;
+  return (ratioSum / count) < ratioThreshold;
+}
+
 function renderDiseaseChart(cropName, model, series, dates, startDate, endDate) {
   const flags = [];
   const temps = [];
   const riskDates = [];
-  dates.forEach(d => {
+  let rhMissingCount = 0;
+  dates.forEach((d, i) => {
     const v = series[d];
     temps.push(v.mean);
+    if (!Number.isFinite(v.rh)) rhMissingCount++;
     const tempOK = v.mean >= model.tempMin && v.mean <= model.tempMax;
-    const rainOK = model.wantRain ? v.rain >= 1 : v.rain < 1;
-    const flag = tempOK && rainOK;
+    const rhOK = evaluateRhCondition(model, v);
+    const radOK = evaluateRadiationDeficit(model, series, dates, i);
+    const flag = tempOK && rhOK && radOK;
     flags.push(flag ? 1 : 0);
     if (flag) riskDates.push(d);
   });
 
-  renderRiskChart(cropName, `${model.displayName}　発生条件チェック`, "発生好適日", flags, temps, dates, startDate, endDate);
+  const humidity = dates.map(d => Number.isFinite(series[d].rh) ? series[d].rh : null);
+  renderRiskChart(cropName, `${model.displayName}　発生条件チェック`, "発生好適日", flags, temps, dates, startDate, endDate, humidity);
 
   pestResultData = { type: "disease", cropName, model, dates, series, flags, startDate, endDate };
 
@@ -930,7 +1008,13 @@ function renderDiseaseChart(cropName, model, series, dates, startDate, endDate) 
   const listHtml = riskDates.length
     ? riskDates.slice(0, 15).map(isoToJapanese).join("、") + (riskDates.length > 15 ? ` ほか${riskDates.length - 15}日` : "")
     : "該当日はありませんでした。";
-  info.innerHTML = `📅 集計期間：${startDate}〜${endDate}<br>発生好適日数：${riskDates.length}日／${dates.length}日<br>該当日：${listHtml}<br><span style="font-size:.75rem;color:#777;">※ 実測・予報データが無い期間は、過去5年の同日平均値で補完しています。簡易的な気象条件による目安であり、実際の発生を保証するものではありません。</span>`;
+  const rhNote = rhMissingCount > 0
+    ? `<br>※ 湿度データが取得できなかった${rhMissingCount}日は、降水量の有無で代用して判定しています。`
+    : "";
+  const radConditionText = model.radDeficit
+    ? "（判定条件：気温 + 湿度 + 日照不足）"
+    : "（判定条件：気温 + 湿度）";
+  info.innerHTML = `📅 集計期間：${startDate}〜${endDate}<br>発生好適日数：${riskDates.length}日／${dates.length}日${radConditionText}<br>該当日：${listHtml}<br><span style="font-size:.75rem;color:#777;">※ 実測・予報データが無い期間は、過去5年の同日平均値で補完しています。簡易的な気象条件による目安であり、実際の発生を保証するものではありません。${rhNote}</span>`;
 
   renderRefs(model);
 }
@@ -940,11 +1024,13 @@ function renderBlastChart(cropName, model, series, dates, startDate, endDate) {
   const means = dates.map(d => series[d].mean);
   const flags = [];
   const riskDates = [];
+  let rhMissingCount = 0;
   dates.forEach((d, i) => {
     const v = series[d];
+    if (!Number.isFinite(v.rh)) rhMissingCount++;
     const windowVals = means.slice(Math.max(0, i - 4), i + 1);
     const avg5 = windowVals.reduce((a, b) => a + b, 0) / windowVals.length;
-    const wetOK = v.rain >= 1;
+    const wetOK = Number.isFinite(v.rh) ? v.rh >= 90 : v.rain >= 1;
     const dayTempOK = v.mean >= 15 && v.mean <= 25;
     const avg5OK = avg5 >= 20 && avg5 <= 25;
     const flag = wetOK && dayTempOK && avg5OK;
@@ -952,7 +1038,8 @@ function renderBlastChart(cropName, model, series, dates, startDate, endDate) {
     if (flag) riskDates.push(d);
   });
 
-  renderRiskChart(cropName, `${model.displayName}　感染好適日チェック（簡易判定）`, "感染好適日", flags, means, dates, startDate, endDate);
+  const humidity = dates.map(d => Number.isFinite(series[d].rh) ? series[d].rh : null);
+  renderRiskChart(cropName, `${model.displayName}　感染好適日チェック（簡易判定）`, "感染好適日", flags, means, dates, startDate, endDate, humidity);
 
   pestResultData = { type: "blast", cropName, model, dates, series, flags, startDate, endDate };
 
@@ -961,13 +1048,16 @@ function renderBlastChart(cropName, model, series, dates, startDate, endDate) {
   const listHtml = riskDates.length
     ? riskDates.slice(0, 15).map(isoToJapanese).join("、") + (riskDates.length > 15 ? ` ほか${riskDates.length - 15}日` : "")
     : "該当日はありませんでした。";
-  info.innerHTML = `📅 集計期間：${startDate}〜${endDate}<br>感染好適日数（簡易判定）：${riskDates.length}日／${dates.length}日<br>好適条件が広域・連続して現れた場合、通常その1〜2週間後に葉いもちの発生が確認されやすいとされています。<br>該当日：${listHtml}<br><span style="font-size:.75rem;color:#777;">※ 日降水量1mm以上を「葉の濡れ」の代用としており、正式なBLASTAM判定（葉面湿潤時間の実測）とは異なる簡易指標です。必ずお住まいの都道府県病害虫防除所の発生予察情報もご確認ください。</span>`;
+  const rhNote = rhMissingCount > 0
+    ? `<br>※ 湿度データが取得できなかった${rhMissingCount}日は、降水量の有無で代用して判定しています。`
+    : "";
+  info.innerHTML = `📅 集計期間：${startDate}〜${endDate}<br>感染好適日数（簡易判定）：${riskDates.length}日／${dates.length}日<br>好適条件が広域・連続して現れた場合、通常その1〜2週間後に葉いもちの発生が確認されやすいとされています。<br>該当日：${listHtml}<br><span style="font-size:.75rem;color:#777;">※ 日平均相対湿度90%以上を「葉の濡れ」の代用としており、正式なBLASTAM判定（葉面湿潤時間の実測）とは異なる簡易指標です。必ずお住まいの都道府県病害虫防除所の発生予察情報もご確認ください。${rhNote}</span>`;
 
   renderRefs(model);
 }
 
-/* ▼ 病害系（disease/blast）共通：好適日フラグ＋気温の複合グラフを描画する */
-function renderRiskChart(cropName, titleSuffix, flagLabel, flags, temps, dates, startDate, endDate) {
+/* ▼ 病害系（disease/blast）共通：好適日フラグ＋気温＋湿度の複合グラフを描画する */
+function renderRiskChart(cropName, titleSuffix, flagLabel, flags, temps, dates, startDate, endDate, humidity) {
   const dispLabels = dates.map(d => `${d.slice(5, 7)}/${d.slice(8, 10)}`);
 
   document.getElementById("pest-chart-wrapper").style.display = "block";
@@ -976,15 +1066,17 @@ function renderRiskChart(cropName, titleSuffix, flagLabel, flags, temps, dates, 
   const chartWrapper = chartInner.parentElement;
   chartInner.style.width = Math.max(chartWrapper.clientWidth, dates.length * 6) + "px";
 
+  const datasets = [
+    { type: "bar", label: flagLabel, data: flags, backgroundColor: "rgba(229,57,53,0.6)", yAxisID: "y1" },
+    { type: "line", label: "日平均気温 (℃)", data: temps, borderColor: "green", backgroundColor: "transparent", pointRadius: 0, borderWidth: 2, yAxisID: "y" }
+  ];
+  if (humidity) {
+    datasets.push({ type: "line", label: "日平均相対湿度 (%)", data: humidity, borderColor: "#1565c0", backgroundColor: "transparent", pointRadius: 0, borderWidth: 2, borderDash: [4, 3], yAxisID: "y2" });
+  }
+
   if (pestChartInstance) pestChartInstance.destroy();
   pestChartInstance = new Chart(document.getElementById("pest-chart"), {
-    data: {
-      labels: dispLabels,
-      datasets: [
-        { type: "bar", label: flagLabel, data: flags, backgroundColor: "rgba(229,57,53,0.6)", yAxisID: "y1" },
-        { type: "line", label: "日平均気温 (℃)", data: temps, borderColor: "green", backgroundColor: "transparent", pointRadius: 0, borderWidth: 2, yAxisID: "y" }
-      ]
-    },
+    data: { labels: dispLabels, datasets },
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: {
@@ -994,6 +1086,7 @@ function renderRiskChart(cropName, titleSuffix, flagLabel, flags, temps, dates, 
       hover: { mode: "index", intersect: false },
       scales: {
         y: { type: "linear", position: "left", title: { display: true, text: "日平均気温 (℃)" } },
+        y2: { type: "linear", position: "left", min: 0, max: 100, title: { display: true, text: "相対湿度 (%)" }, grid: { drawOnChartArea: false }, display: !!humidity },
         y1: { type: "linear", position: "right", min: 0, max: 1, ticks: { stepSize: 1, callback: v => v === 1 ? "該当" : "—" }, title: { display: true, text: flagLabel }, grid: { drawOnChartArea: false } },
         x: { title: { display: true, text: "日付" } }
       }
@@ -1022,9 +1115,22 @@ function exportPestCSV() {
       rows.push([d, series[d].mean.toFixed(1), eff.toFixed(2), cum.toFixed(2), series[d].estimated ? "過去5年平均で補完" : "実測/予報"]);
     });
   } else {
-    rows = [["日付", "日平均気温(℃)", "日降水量(mm)", "該当有無", "備考"]];
+    const hasRad = !!model.radDeficit;
+    const headers = ["日付", "日平均気温(℃)", "日平均相対湿度(%)", "日降水量(mm)"];
+    if (hasRad) headers.push("日射量(MJ/m2)", "日射量 平年比(%)");
+    headers.push("該当有無", "備考");
+    rows = [headers];
     dates.forEach((d, i) => {
-      rows.push([d, series[d].mean.toFixed(1), series[d].rain.toFixed(1), pestResultData.flags[i] ? "該当" : "", series[d].estimated ? "過去5年平均で補完" : "実測/予報"]);
+      const v = series[d];
+      const rhText = Number.isFinite(v.rh) ? v.rh.toFixed(0) : "";
+      const row = [d, v.mean.toFixed(1), rhText, v.rain.toFixed(1)];
+      if (hasRad) {
+        const swText = Number.isFinite(v.sw) ? v.sw.toFixed(1) : "";
+        const ratioText = (Number.isFinite(v.sw) && Number.isFinite(v.swAvg) && v.swAvg > 0) ? (v.sw / v.swAvg * 100).toFixed(0) : "";
+        row.push(swText, ratioText);
+      }
+      row.push(pestResultData.flags[i] ? "該当" : "", v.estimated ? "過去5年平均で補完" : "実測/予報");
+      rows.push(row);
     });
   }
   const prefix = `photeosync_pest_${cropName}_${model.displayName}`.replace(/[\s\/（）()]/g, "_");

@@ -856,12 +856,15 @@ async function fetchPestWeatherSeries(startDate, endDate, needClimatology) {
     const md = dateStr.slice(5);
     const climatology = avgByMonthDay[md] || {};
     if (useActual) {
+      const swActual = Number.isFinite(a.sw) ? a.sw : null;
       series[dateStr] = {
         mean: a.mean,
         rain: Number.isFinite(a.rain) ? a.rain : 0,
         rh: Number.isFinite(a.rh) ? a.rh : null,
-        sw: Number.isFinite(a.sw) ? a.sw : null,
+        sw: swActual !== null ? swActual : (Number.isFinite(climatology.sw) ? climatology.sw : null),
+        swActual: swActual,
         swAvg: Number.isFinite(climatology.sw) ? climatology.sw : null,
+        swEstimated: swActual === null,
         estimated: false
       };
     } else {
@@ -870,7 +873,9 @@ async function fetchPestWeatherSeries(startDate, endDate, needClimatology) {
         rain: Number.isFinite(climatology.rain) ? climatology.rain : 0,
         rh: Number.isFinite(climatology.rh) ? climatology.rh : null,
         sw: Number.isFinite(climatology.sw) ? climatology.sw : null,
+        swActual: null,
         swAvg: Number.isFinite(climatology.sw) ? climatology.sw : null,
+        swEstimated: true,
         estimated: true
       };
     }
@@ -962,8 +967,10 @@ function evaluateRhCondition(model, v) {
 }
 
 /* ▼ 「日照不足が続いているか」を、直近N日間平均の日射量が平年値（過去5年の同日平均）に
-      対してどの程度の割合かで判定する。平年値・実測値のどちらかが欠けている日は
-      判定材料が無いため、その日はカウントせず（＝日照不足の判定には使わない）。
+      対してどの程度の割合かで判定する。実測・予報の日射量がある日はその値を、
+      本日+16日より先など実測が無い日は過去5年平均で補完した値を使う。
+      補完した日は「平年値÷平年値＝100%」となり平年並み（＝日照不足ではない）として扱われる。
+      平年値そのものが求まらない日（archive-apiにデータが無い等）だけカウントから除外し、
       比較対象の日数が1日も無い場合は判定不能として true（条件を妨げない）を返す。 */
 function evaluateRadiationDeficit(model, series, dates, i) {
   if (!model.radDeficit) return true;
@@ -981,23 +988,15 @@ function evaluateRadiationDeficit(model, series, dates, i) {
   return (ratioSum / count) < ratioThreshold;
 }
 
-/* ▼ 日照不足判定に使っている「直近N日平均の日射量平年比(%)」を、
-      グラフ表示用に日付ごとの系列として計算する（radDeficitが無いモデルではnull） */
-function computeRadiationRatioSeries(model, series, dates) {
+/* ▼ 日射量の系列を、グラフ表示用に日付ごとに取り出す（radDeficitが無いモデルではnull）。
+      「実測値」は series[d].sw（実測・予報があればその値、無ければ過去5年平均で補完した値）、
+      「平年値」は series[d].swAvg（常にその日と同じ月日の過去5年平均）をそのまま使う。 */
+function getRadiationSeries(model, series, dates) {
   if (!model.radDeficit) return null;
-  const { window } = model.radDeficit;
-  return dates.map((d, i) => {
-    const startIdx = Math.max(0, i - window + 1);
-    let sum = 0, count = 0;
-    for (let k = startIdx; k <= i; k++) {
-      const v = series[dates[k]];
-      if (Number.isFinite(v.sw) && Number.isFinite(v.swAvg) && v.swAvg > 0) {
-        sum += v.sw / v.swAvg;
-        count++;
-      }
-    }
-    return count > 0 ? (sum / count) * 100 : null;
-  });
+  return {
+    actual: dates.map(d => Number.isFinite(series[d].sw) ? series[d].sw : null),
+    avg: dates.map(d => Number.isFinite(series[d].swAvg) ? series[d].swAvg : null)
+  };
 }
 
 function renderDiseaseChart(cropName, model, series, dates, startDate, endDate) {
@@ -1005,10 +1004,12 @@ function renderDiseaseChart(cropName, model, series, dates, startDate, endDate) 
   const temps = [];
   const riskDates = [];
   let rhMissingCount = 0;
+  let swEstimatedCount = 0;
   dates.forEach((d, i) => {
     const v = series[d];
     temps.push(v.mean);
     if (!Number.isFinite(v.rh)) rhMissingCount++;
+    if (model.radDeficit && v.swEstimated) swEstimatedCount++;
     const tempOK = v.mean >= model.tempMin && v.mean <= model.tempMax;
     const rhOK = evaluateRhCondition(model, v);
     const radOK = evaluateRadiationDeficit(model, series, dates, i);
@@ -1018,9 +1019,8 @@ function renderDiseaseChart(cropName, model, series, dates, startDate, endDate) 
   });
 
   const humidity = dates.map(d => Number.isFinite(series[d].rh) ? series[d].rh : null);
-  const radiationRatio = computeRadiationRatioSeries(model, series, dates);
-  const radThresholdPercent = model.radDeficit ? model.radDeficit.ratioThreshold * 100 : null;
-  renderRiskChart(cropName, `${model.displayName}　発生条件チェック`, "発生好適日", flags, temps, dates, startDate, endDate, humidity, radiationRatio, radThresholdPercent);
+  const radiation = getRadiationSeries(model, series, dates);
+  renderRiskChart(cropName, `${model.displayName}　発生条件チェック`, "発生好適日", flags, temps, dates, startDate, endDate, humidity, radiation);
 
   pestResultData = { type: "disease", cropName, model, dates, series, flags, startDate, endDate };
 
@@ -1032,10 +1032,13 @@ function renderDiseaseChart(cropName, model, series, dates, startDate, endDate) 
   const rhNote = rhMissingCount > 0
     ? `<br>※ 湿度データが取得できなかった${rhMissingCount}日は、降水量の有無で代用して判定しています。`
     : "";
+  const swNote = swEstimatedCount > 0
+    ? `<br>※ 日射量の実測・予報値が無かった${swEstimatedCount}日は、過去5年の同日平均値で補完しています。`
+    : "";
   const radConditionText = model.radDeficit
     ? "（判定条件：気温 + 湿度 + 日照不足）"
     : "（判定条件：気温 + 湿度）";
-  info.innerHTML = `📅 集計期間：${startDate}〜${endDate}<br>発生好適日数：${riskDates.length}日／${dates.length}日${radConditionText}<br>該当日：${listHtml}<br><span style="font-size:.75rem;color:#777;">※ 実測・予報データが無い期間は、過去5年の同日平均値で補完しています。簡易的な気象条件による目安であり、実際の発生を保証するものではありません。${rhNote}</span>`;
+  info.innerHTML = `📅 集計期間：${startDate}〜${endDate}<br>発生好適日数：${riskDates.length}日／${dates.length}日${radConditionText}<br>該当日：${listHtml}<br><span style="font-size:.75rem;color:#777;">※ 実測・予報データが無い期間は、過去5年の同日平均値で補完しています。簡易的な気象条件による目安であり、実際の発生を保証するものではありません。${rhNote}${swNote}</span>`;
 
   renderRefs(model);
 }
@@ -1077,8 +1080,8 @@ function renderBlastChart(cropName, model, series, dates, startDate, endDate) {
   renderRefs(model);
 }
 
-/* ▼ 病害系（disease/blast）共通：好適日フラグ＋気温＋湿度（＋日照比率）の複合グラフを描画する */
-function renderRiskChart(cropName, titleSuffix, flagLabel, flags, temps, dates, startDate, endDate, humidity, radiationRatio, radThresholdPercent) {
+/* ▼ 病害系（disease/blast）共通：好適日フラグ＋気温＋湿度（＋日射量）の複合グラフを描画する */
+function renderRiskChart(cropName, titleSuffix, flagLabel, flags, temps, dates, startDate, endDate, humidity, radiation) {
   const dispLabels = dates.map(d => `${d.slice(5, 7)}/${d.slice(8, 10)}`);
 
   document.getElementById("pest-chart-wrapper").style.display = "block";
@@ -1094,11 +1097,9 @@ function renderRiskChart(cropName, titleSuffix, flagLabel, flags, temps, dates, 
   if (humidity) {
     datasets.push({ type: "line", label: "日平均相対湿度 (%)", data: humidity, borderColor: "#1565c0", backgroundColor: "transparent", pointRadius: 0, borderWidth: 2, borderDash: [4, 3], yAxisID: "y2" });
   }
-  if (radiationRatio) {
-    datasets.push({ type: "line", label: "日射量 平年比（直近3日平均, %）", data: radiationRatio, borderColor: "#f9a825", backgroundColor: "transparent", pointRadius: 0, borderWidth: 2, yAxisID: "y3", spanGaps: true });
-    if (Number.isFinite(radThresholdPercent)) {
-      datasets.push({ type: "line", label: `日照不足の目安（平年比${radThresholdPercent}%）`, data: dates.map(() => radThresholdPercent), borderColor: "#bdbdbd", borderDash: [3, 3], borderWidth: 1, pointRadius: 0, backgroundColor: "transparent", yAxisID: "y3" });
-    }
+  if (radiation) {
+    datasets.push({ type: "line", label: "日射量（実測・予報／欠測日は平年補完） (MJ/m²)", data: radiation.actual, borderColor: "#f9a825", backgroundColor: "transparent", pointRadius: 0, borderWidth: 2, yAxisID: "y3" });
+    datasets.push({ type: "line", label: "日射量 平年値 (MJ/m²)", data: radiation.avg, borderColor: "#bdbdbd", borderDash: [3, 3], borderWidth: 1, pointRadius: 0, backgroundColor: "transparent", yAxisID: "y3" });
   }
 
   if (pestChartInstance) pestChartInstance.destroy();
@@ -1114,7 +1115,7 @@ function renderRiskChart(cropName, titleSuffix, flagLabel, flags, temps, dates, 
       scales: {
         y: { type: "linear", position: "left", title: { display: true, text: "日平均気温 (℃)" } },
         y2: { type: "linear", position: "left", min: 0, max: 100, title: { display: true, text: "相対湿度 (%)" }, grid: { drawOnChartArea: false }, display: !!humidity },
-        y3: { type: "linear", position: "right", min: 0, max: 150, title: { display: true, text: "日射量 平年比 (%)" }, grid: { drawOnChartArea: false }, display: !!radiationRatio },
+        y3: { type: "linear", position: "right", min: 0, title: { display: true, text: "日射量 (MJ/m²)" }, grid: { drawOnChartArea: false }, display: !!radiation },
         y1: { type: "linear", position: "right", min: 0, max: 1, ticks: { stepSize: 1, callback: v => v === 1 ? "該当" : "—" }, title: { display: true, text: flagLabel }, grid: { drawOnChartArea: false } },
         x: { title: { display: true, text: "日付" } }
       }
@@ -1157,7 +1158,15 @@ function exportPestCSV() {
         const ratioText = (Number.isFinite(v.sw) && Number.isFinite(v.swAvg) && v.swAvg > 0) ? (v.sw / v.swAvg * 100).toFixed(0) : "";
         row.push(swText, ratioText);
       }
-      row.push(pestResultData.flags[i] ? "該当" : "", v.estimated ? "過去5年平均で補完" : "実測/予報");
+      let note;
+      if (v.estimated) {
+        note = "過去5年平均で補完";
+      } else if (hasRad && v.swEstimated) {
+        note = "日射量のみ過去5年平均で補完";
+      } else {
+        note = "実測/予報";
+      }
+      row.push(pestResultData.flags[i] ? "該当" : "", note);
       rows.push(row);
     });
   }

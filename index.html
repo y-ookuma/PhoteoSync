@@ -7,6 +7,8 @@
 <title>PhoteoSync</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.6/dist/purify.min.js"></script>
 
 <style>
   body {
@@ -295,11 +297,233 @@
   #five-year-info { display:none; margin:4px 0 12px; padding:8px 12px; border-radius:6px; background:#f7f7f7; font-size:.85rem; line-height:1.5; }
   .five-year-note { font-size:.75rem; color:#777; margin-top:5px; }
   .five-year-loading { padding:12px; text-align:center; color:#666; }
+
+  /* ===== PhoteoSync modern UI ===== */
+  body {
+    margin: 0 auto;
+    max-width: 980px;
+    padding: 22px 18px 36px;
+    background:
+      radial-gradient(circle at 8% 0%, rgba(33,150,243,.10), transparent 28%),
+      radial-gradient(circle at 95% 8%, rgba(76,175,80,.09), transparent 26%),
+      #f6f8fb;
+    color: #172033;
+    font-family: Inter, "Noto Sans JP", "Yu Gothic", sans-serif;
+  }
+
+  .main-wrapper {
+    background: rgba(255,255,255,.94);
+    border: 1px solid rgba(25,45,75,.08);
+    border-radius: 22px;
+    padding: 22px;
+    box-shadow: 0 14px 45px rgba(31,49,78,.09);
+  }
+
+  #title {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin: 0 0 22px;
+    font-size: clamp(1.35rem, 3vw, 1.8rem);
+    line-height: 1.35;
+    letter-spacing: .01em;
+  }
+
+  #title .title-main {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: #172033;
+  }
+
+  #title .title-main::before {
+    content: "☀";
+    display: inline-grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    border-radius: 11px;
+    background: linear-gradient(135deg, #ffd54f, #ffb300);
+    color: #fff;
+    font-size: 20px;
+    box-shadow: 0 6px 14px rgba(255,179,0,.25);
+  }
+
+  .wiki-title-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 12px;
+    border: 1px solid #dbe3ef;
+    border-radius: 999px;
+    background: #fff;
+    color: #285a9e;
+    text-decoration: none;
+    font-size: .78rem;
+    font-weight: 700;
+    box-shadow: 0 4px 12px rgba(31,49,78,.07);
+    cursor: pointer;
+    transition: .18s ease;
+  }
+  .wiki-title-btn:hover {
+    transform: translateY(-1px);
+    border-color: #8db7ed;
+    box-shadow: 0 7px 18px rgba(33,100,180,.14);
+  }
+
+  .control-block, .picker-box, .accumulation-picker-box {
+    border: 1px solid #e3e9f2;
+    border-radius: 16px;
+    background: linear-gradient(180deg, #fff, #fbfcfe);
+    padding: 15px;
+    box-shadow: 0 5px 18px rgba(31,49,78,.045);
+  }
+
+  label { color: #4a5870; font-weight: 700; }
+
+  .day-btn, .toggle-btn, .ma-btn, .chart-toolbar-btn, #back-to-daily,
+  #back-to-5year, #back-to-accumulation {
+    border: 1px solid #d9e1ec;
+    background: #fff;
+    color: #34435b;
+    border-radius: 10px;
+    transition: .18s ease;
+    box-shadow: 0 2px 7px rgba(31,49,78,.04);
+  }
+  .day-btn:hover, .toggle-btn:hover, .ma-btn:hover, .chart-toolbar-btn:hover {
+    border-color: #9dbbe0;
+    transform: translateY(-1px);
+  }
+  .day-btn.active, .ma-btn.active {
+    background: linear-gradient(135deg, #2196f3, #1769c2);
+    border-color: #1769c2;
+    box-shadow: 0 6px 15px rgba(33,150,243,.22);
+  }
+
+  .chart-wrapper {
+    border: 1px solid #e5eaf2;
+    border-radius: 16px;
+    background: #fff;
+    padding: 8px;
+    box-shadow: 0 6px 20px rgba(31,49,78,.045);
+  }
+
+  .main-chart-toolbar, .chart-toolbar {
+    margin-top: 12px;
+  }
+
+  .wiki-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: none;
+    padding: 22px;
+    background: rgba(15,23,42,.58);
+    backdrop-filter: blur(8px);
+  }
+  .wiki-modal.open { display: flex; align-items: center; justify-content: center; }
+
+  .wiki-dialog {
+    width: min(920px, 100%);
+    max-height: min(88vh, 900px);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: #fff;
+    border: 1px solid rgba(255,255,255,.7);
+    border-radius: 20px;
+    box-shadow: 0 25px 80px rgba(0,0,0,.28);
+  }
+  .wiki-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 18px;
+    border-bottom: 1px solid #e7ebf2;
+    background: linear-gradient(135deg,#f8fbff,#fff);
+  }
+  .wiki-header strong { font-size: 1rem; }
+  .wiki-actions { display:flex; gap:8px; align-items:center; }
+  .wiki-actions a, .wiki-close {
+    border: 1px solid #dbe3ef;
+    border-radius: 9px;
+    background: #fff;
+    padding: 7px 10px;
+    color: #315b91;
+    text-decoration: none;
+    cursor: pointer;
+    font-size: .78rem;
+  }
+  .wiki-close { color:#46566e; }
+  .wiki-content {
+    overflow: auto;
+    padding: 28px clamp(18px, 4vw, 42px);
+    line-height: 1.8;
+    color: #273449;
+  }
+  .wiki-content h1, .wiki-content h2, .wiki-content h3 {
+    color: #15233a;
+    line-height: 1.35;
+    margin-top: 1.6em;
+    border-bottom: 1px solid #edf0f5;
+    padding-bottom: .35em;
+  }
+  .wiki-content h1 { margin-top:0; font-size:1.8rem; }
+  .wiki-content h2 { font-size:1.35rem; }
+  .wiki-content h3 { font-size:1.1rem; }
+  .wiki-content a { color:#1769c2; }
+  .wiki-content img { max-width:100%; height:auto; border-radius:10px; }
+  .wiki-content code {
+    padding: .15em .4em;
+    border-radius: 5px;
+    background:#f1f4f8;
+    font-size:.9em;
+  }
+  .wiki-content pre {
+    overflow:auto;
+    padding:14px 16px;
+    border-radius:10px;
+    background:#172033;
+    color:#eef4ff;
+  }
+  .wiki-content pre code { padding:0; background:transparent; color:inherit; }
+  .wiki-content blockquote {
+    margin-left:0;
+    padding:8px 16px;
+    border-left:4px solid #5b9ee8;
+    background:#f5f9ff;
+    border-radius:0 8px 8px 0;
+  }
+  .wiki-loading, .wiki-error {
+    padding: 42px 12px;
+    text-align:center;
+    color:#68758a;
+  }
+  .wiki-error { color:#b23b3b; }
+
+  @media (max-width: 600px) {
+    body { padding: 8px; }
+    .main-wrapper { padding: 14px; border-radius: 16px; }
+    #title { justify-content: center; margin-bottom:16px; }
+    .wiki-modal { padding: 8px; }
+    .wiki-dialog { max-height: 94vh; border-radius: 16px; }
+    .wiki-content { padding: 22px 16px; }
+  }
+
 </style>
 </head>
 <body>
 
-<h2 id="title"><a href="https://github.com/y-ookuma/PhoteoSync/blob/main/README.md" target="_blank" rel="noopener noreferrer" style="color: inherit; text-decoration: none;">PhoteoSync</a><br>（現在地取得中…）</h2>
+<h2 id="title">
+  <span class="title-main">
+    <a href="https://github.com/y-ookuma/PhoteoSync/blob/main/README.md" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:none;">PhoteoSync</a>
+    <button type="button" class="wiki-title-btn" onclick="openWiki()" aria-label="PhoteoSync Wikiを表示">📖 Wiki</button>
+  </span>
+  <span id="title-location">（現在地取得中…）</span>
+</h2>
 
 <div class="main-wrapper">
 
@@ -371,7 +595,7 @@
   <button type="button" class="toggle-btn" id="glossary-toggle-btn" onclick="toggleGlossary()">
     <span class="arrow">▶</span>ⓘ 用語の説明
   </button>
-  <a class="toggle-btn" href="https://github.com/y-ookuma/PhoteoSync/wiki" target="_blank" rel="noopener noreferrer" style="text-decoration:none; color:inherit;">📖 Wiki</a>
+  
   <div class="toggle-content" id="glossary-toggle-content">
     <ul style="font-size: 0.85rem; line-height: 1.8; padding-left: 20px; margin: 8px 0;">
       <li><b>短波放射</b>：太陽から地表に届く全天日射（直達光＋散乱光）のエネルギー量。</li>
@@ -448,7 +672,110 @@
 
 </div>
 
+
+<!-- ▼ Wiki / README Markdown viewer -->
+<div class="wiki-modal" id="wiki-modal" role="dialog" aria-modal="true" aria-labelledby="wiki-dialog-title" onclick="if(event.target===this) closeWiki()">
+  <section class="wiki-dialog">
+    <header class="wiki-header">
+      <strong id="wiki-dialog-title">📖 PhoteoSync Wiki / README</strong>
+      <div class="wiki-actions">
+        <a href="https://github.com/y-ookuma/PhoteoSync/wiki" target="_blank" rel="noopener noreferrer">GitHub Wiki ↗</a>
+        <button type="button" class="wiki-close" onclick="closeWiki()">✕ 閉じる</button>
+      </div>
+    </header>
+    <article class="wiki-content" id="wiki-content">
+      <div class="wiki-loading">README.md を読み込んでいます…</div>
+    </article>
+  </section>
+</div>
+
 <script>
+
+
+/* ==========================================================================
+   Wiki / README Markdown Viewer
+   - README.mdをfetch
+   - marked.jsでMarkdown→HTML
+   - DOMPurifyでHTMLをサニタイズ
+   ========================================================================== */
+const PHOTEOSYNC_README_URL =
+  "https://raw.githubusercontent.com/y-ookuma/PhoteoSync/main/README.md";
+const PHOTEOSYNC_WIKI_URL =
+  "https://github.com/y-ookuma/PhoteoSync/wiki";
+
+let wikiLoaded = false;
+
+async function openWiki() {
+  const modal = document.getElementById("wiki-modal");
+  const content = document.getElementById("wiki-content");
+  modal.classList.add("open");
+  document.body.style.overflow = "hidden";
+
+  if (wikiLoaded) return;
+
+  content.innerHTML = '<div class="wiki-loading">📖 README.md を読み込んでいます…</div>';
+
+  try {
+    const response = await fetch(PHOTEOSYNC_README_URL, {
+      cache: "no-store"
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const markdown = await response.text();
+
+    if (typeof marked === "undefined") {
+      throw new Error("marked.js が読み込まれていません");
+    }
+
+    const rendered = marked.parse(markdown, {
+      breaks: true,
+      gfm: true
+    });
+
+    content.innerHTML = typeof DOMPurify !== "undefined"
+      ? DOMPurify.sanitize(rendered)
+      : rendered;
+
+    // README内の相対リンク・画像をGitHubリポジトリ基準に補正
+    content.querySelectorAll("a[href]").forEach(a => {
+      const href = a.getAttribute("href");
+      if (!href || href.startsWith("#") || /^[a-z]+:/i.test(href)) return;
+      a.href = new URL(href, "https://github.com/y-ookuma/PhoteoSync/blob/main/").href;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+    });
+
+    content.querySelectorAll("img[src]").forEach(img => {
+      const src = img.getAttribute("src");
+      if (!src || /^[a-z]+:/i.test(src) || src.startsWith("//")) return;
+      img.src = new URL(src, "https://raw.githubusercontent.com/y-ookuma/PhoteoSync/main/").href;
+    });
+
+    wikiLoaded = true;
+  } catch (error) {
+    console.error("Wiki/README loading failed:", error);
+    content.innerHTML = `
+      <div class="wiki-error">
+        <strong>README.md を読み込めませんでした。</strong><br>
+        ネットワーク接続、GitHubへのアクセス、またはCORS設定をご確認ください。<br><br>
+        <a href="${PHOTEOSYNC_WIKI_URL}" target="_blank" rel="noopener noreferrer">
+          GitHub Wikiをブラウザで開く ↗
+        </a>
+      </div>`;
+  }
+}
+
+function closeWiki() {
+  document.getElementById("wiki-modal").classList.remove("open");
+  document.body.style.overflow = "";
+}
+
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape") closeWiki();
+});
+
 
 /* ▼ JST（Asia/Tokyo）統一ユーティリティ
       ブラウザのローカルタイムゾーンには依存せず、常にJST(+09:00)で扱う。 */
@@ -730,8 +1057,8 @@ function success(pos) {
   lat = pos.coords.latitude.toFixed(6);
   lon = pos.coords.longitude.toFixed(6);
 
-  document.getElementById("title").innerHTML =
-    `${TITLE_HTML}<br>（現在地取得中… ${lat}, ${lon}｜時刻: JST）`;
+  document.getElementById("title-location").textContent =
+    `（現在地取得中… ${lat}, ${lon}｜時刻: JST）`;
 
   Promise.all([
     loadMuniTable(),
@@ -755,14 +1082,12 @@ function success(pos) {
       const placeName = `${muniName}${oaza}`;
       currentPlaceName = placeName || null;
 
-      document.getElementById("title").innerHTML =
-        `${TITLE_HTML}<br>` +
+      document.getElementById("title-location").textContent =
         `現在地: ${lat}, ${lon}${placeName ? "　" + placeName : ""}`;
     })
     .catch(() => {
       // GSIでデータが見つからない地域(離島・一部山間部等)は座標のみ表示
-      document.getElementById("title").innerHTML =
-        `${TITLE_HTML}<br>` +
+      document.getElementById("title-location").textContent =
         `現在地: ${lat}, ${lon}`;
     });
 
